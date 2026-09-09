@@ -7,6 +7,13 @@ from nexus.sessions.context import (
     render_agent_context,
 )
 
+from nexus.sessions.state_update import (
+    apply_state_update,
+    extract_state_update,
+    state_update_protocol_prompt,
+    strip_state_update,
+)
+
 from nexus.sessions.store import (
     SessionStore,
     utc_now,
@@ -346,9 +353,13 @@ def continue_session(
         session
     )
 
-    prompt = render_agent_context(
-        session,
-        current_instruction=instruction,
+    prompt = (
+        render_agent_context(
+            session,
+            current_instruction=instruction,
+        )
+        + "\n\n"
+        + state_update_protocol_prompt()
     )
 
     # build_agent_context/render_agent_context may update
@@ -368,18 +379,37 @@ def continue_session(
             result
         )
 
-        session.status = "COMPLETED"
-
-        session.last_result = str(
+        raw_result_text = str(
             result
         )
+
+        state_update = None
+        state_update_error = None
+        visible_result_text = raw_result_text
+
+        try:
+            state_update = extract_state_update(
+                raw_result_text
+            )
+
+            if state_update is not None:
+                visible_result_text = strip_state_update(
+                    raw_result_text
+                )
+
+        except Exception as exc:
+            state_update_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        session.status = "COMPLETED"
+
+        session.last_result = visible_result_text
 
         history.append(
             {
                 "type": "result",
-                "text": str(
-                    result
-                ),
+                "text": visible_result_text,
                 "created_at": utc_now(),
             }
         )
@@ -396,9 +426,57 @@ def continue_session(
             continuation_point="ready-for-next-turn",
         )
 
+        if state_update_error is not None:
+            history.append(
+                {
+                    "type": "state_update_rejected",
+                    "text": state_update_error,
+                    "created_at": utc_now(),
+                }
+            )
+
         store.save(
             session
         )
+
+        explicit_checkpoint = False
+
+        if state_update is not None:
+            try:
+                updated = apply_state_update(
+                    store,
+                    session_id,
+                    state_update,
+                )
+
+                explicit_checkpoint = (
+                    state_update.checkpoint
+                    is not None
+                )
+
+            except Exception as exc:
+                refreshed_rejection = store.get(
+                    session_id
+                )
+
+                if refreshed_rejection is not None:
+                    rejection_history = _ensure_history(
+                        refreshed_rejection
+                    )
+
+                    rejection_history.append(
+                        {
+                            "type": "state_update_rejected",
+                            "text": (
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                            "created_at": utc_now(),
+                        }
+                    )
+
+                    store.save(
+                        refreshed_rejection
+                    )
 
         refreshed = store.get(
             session_id
@@ -410,6 +488,7 @@ def continue_session(
                 "auto_checkpoint",
                 True,
             )
+            and not explicit_checkpoint
         ):
             next_serial = (
                 int(
@@ -450,6 +529,9 @@ def continue_session(
                 session_id,
                 checkpoint,
             )
+
+        if visible_result_text != raw_result_text:
+            return visible_result_text
 
         return result
 
