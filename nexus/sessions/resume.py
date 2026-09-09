@@ -523,6 +523,44 @@ def build_resume_instruction(
             )
         )
 
+    lines.extend(
+        [
+            "",
+            "RESUME STATE CONTRACT:",
+            (
+                "When you actually complete or otherwise change "
+                "a durable pending work item during this resumed "
+                "turn, that is a durable session-state change."
+            ),
+            (
+                "In that case, your FINAL ASSISTANT RESPONSE "
+                "must include the NEXUS_STATE_UPDATE block "
+                "required by the session protocol."
+            ),
+            (
+                "For work completed in this resumed turn, place "
+                "the exact completed item text in completed_work."
+            ),
+            (
+                "Remove completed items from pending_work and "
+                "return the full remaining pending list."
+            ),
+            (
+                "Set active_item to the next remaining pending "
+                "item, or null when no pending work remains."
+            ),
+            (
+                "Do not substitute memory_add, a checkpoint, "
+                "tool output, or prose for NEXUS_STATE_UPDATE."
+            ),
+            (
+                "Once the requested pending work is completed "
+                "and verified, stop using tools and return the "
+                "final response."
+            ),
+        ]
+    )
+
     return "\n".join(
         lines
     )

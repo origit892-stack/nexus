@@ -28,3 +28,85 @@ def test_completed_not_reactivated(tmp_path):
     store,s=make_session(tmp_path); store.mark_done(s.id,"done"); x=apply_state_update(store,s.id,SessionStateUpdate(active_item="done")); assert x.working_state["active_item"] is None
 def test_checkpoint(tmp_path):
     store,s=make_session(tmp_path); x=apply_state_update(store,s.id,SessionStateUpdate(checkpoint="cp")); assert x.working_state["checkpoint_serial"]==1; x=apply_state_update(store,s.id,SessionStateUpdate()); assert x.working_state["checkpoint_serial"]==1
+
+
+def test_marker_word_in_prose_before_real_block():
+    text = """
+I will now return the NEXUS_STATE_UPDATE block.
+
+NEXUS_STATE_UPDATE
+{
+  "completed_work": ["one"],
+  "pending_work": ["two"],
+  "active_item": "two"
+}
+NEXUS_STATE_UPDATE_END
+
+NEXUS_EVIDENCE_SUMMARY={"tool_calls": 1}
+"""
+
+    update = extract_state_update(
+        text
+    )
+
+    assert update is not None
+    assert update.completed_work == [
+        "one"
+    ]
+    assert update.pending_work == [
+        "two"
+    ]
+    assert update.active_item == "two"
+
+
+def test_strip_preserves_prose_and_metadata():
+    text = """
+I will now return the NEXUS_STATE_UPDATE block.
+
+NEXUS_STATE_UPDATE
+{
+  "completed_work": ["one"]
+}
+NEXUS_STATE_UPDATE_END
+
+NEXUS_EVIDENCE_SUMMARY={"tool_calls": 1}
+NEXUS_TIMING_SUMMARY={"events": []}
+"""
+
+    visible = strip_state_update(
+        text
+    )
+
+    assert (
+        "I will now return the NEXUS_STATE_UPDATE block."
+        in visible
+    )
+
+    assert (
+        "\nNEXUS_STATE_UPDATE\n"
+        not in visible
+    )
+
+    assert (
+        "NEXUS_STATE_UPDATE_END"
+        not in visible
+    )
+
+    assert (
+        "NEXUS_EVIDENCE_SUMMARY="
+        in visible
+    )
+
+    assert (
+        "NEXUS_TIMING_SUMMARY="
+        in visible
+    )
+
+
+def test_prose_only_marker_name_is_not_block():
+    assert (
+        extract_state_update(
+            "I may return a NEXUS_STATE_UPDATE block later."
+        )
+        is None
+    )

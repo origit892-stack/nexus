@@ -594,6 +594,10 @@ class Agent:
         ]
 
         try:
+            last_tool_signature = None
+            repeated_tool_count = 0
+            stagnation_warning_sent = False
+
             for iteration in range(
                 1,
                 int(
@@ -768,6 +772,117 @@ class Agent:
                     name = (
                         call.function.name
                     )
+
+                    raw_arguments = (
+                        call.function.arguments
+                        or "{}"
+                    )
+
+                    try:
+                        signature_args = json.loads(
+                            raw_arguments
+                        )
+                    except Exception:
+                        signature_args = (
+                            raw_arguments
+                        )
+
+                    tool_signature = (
+                        name,
+                        json.dumps(
+                            signature_args,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ),
+                    )
+
+                    if (
+                        tool_signature
+                        == last_tool_signature
+                    ):
+                        repeated_tool_count += 1
+                    else:
+                        last_tool_signature = (
+                            tool_signature
+                        )
+                        repeated_tool_count = 1
+                        stagnation_warning_sent = False
+
+                    if repeated_tool_count >= 4:
+                        final = (
+                            "NEXUS_STAGNATION_DETECTED:"
+                            f"{name}:"
+                            f"repeated={repeated_tool_count}"
+                        )
+
+                        self.store.finish(
+                            rid,
+                            "FAIL",
+                            final,
+                        )
+
+                        run_state.save({
+                            "role": self.role,
+                            "task": task,
+                            "status": "FAIL",
+                            "iteration": iteration,
+                            "result": final,
+                        })
+
+                        return final
+
+                    if (
+                        repeated_tool_count == 3
+                        and not stagnation_warning_sent
+                    ):
+                        stagnation_warning_sent = True
+
+                        output = (
+                            "NEXUS_STAGNATION_WARNING: "
+                            "This exact tool call has already "
+                            "been requested repeatedly with "
+                            "the same arguments. Do not call "
+                            "it again. If the objective is "
+                            "complete, return the final "
+                            "assistant response now. If "
+                            "durable session state changed, "
+                            "include the required "
+                            "NEXUS_STATE_UPDATE block directly "
+                            "in that final response. Otherwise "
+                            "choose a materially different "
+                            "action."
+                        )
+
+                        evidence_ledger.record(
+                            name,
+                            signature_args,
+                            output,
+                        )
+
+                        self.store.event(
+                            rid,
+                            "stagnation_warning",
+                            {
+                                "name": name,
+                                "args": signature_args,
+                                "repeated": (
+                                    repeated_tool_count
+                                ),
+                            },
+                        )
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": (
+                                    call.id
+                                ),
+                                "content": output,
+                            }
+                        )
+
+                        continue
 
                     if name not in {
                         "delegate_task",

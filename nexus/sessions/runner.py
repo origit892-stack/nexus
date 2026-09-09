@@ -383,6 +383,19 @@ def continue_session(
             result
         )
 
+        failure_sentinels = (
+            "AGENT_EXCEPTION=",
+            "MAX_ITERATIONS_REACHED",
+            "NEXUS_TOOL_BUDGET_EXCEEDED=",
+        )
+
+        if raw_result_text.startswith(
+            failure_sentinels
+        ):
+            raise RuntimeError(
+                raw_result_text
+            )
+
         state_update = None
         state_update_error = None
         visible_result_text = raw_result_text

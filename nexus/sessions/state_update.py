@@ -36,27 +36,184 @@ def parse_state_update_data(data: Any):
         active_item=_clean_text(data.get("active_item")), completed_work=_clean_list(data.get("completed_work")),
         pending_work=_normalize_pending(data.get("pending_work")), add_blockers=_clean_list(data.get("add_blockers")),
         clear_blockers=_clean_list(data.get("clear_blockers")), checkpoint=_clean_text(data.get("checkpoint")))
+def _find_marker_line(
+    text,
+    marker,
+    start=0,
+):
+    offset = 0
+
+    for line in text.splitlines(
+        keepends=True
+    ):
+        line_start = offset
+        line_end = (
+            offset
+            + len(line)
+        )
+
+        if (
+            line_start >= start
+            and line.strip() == marker
+        ):
+            content_end = line_end
+
+            while (
+                content_end > line_start
+                and text[
+                    content_end - 1
+                ] in "\r\n"
+            ):
+                content_end -= 1
+
+            return (
+                line_start,
+                content_end,
+                line_end,
+            )
+
+        offset = line_end
+
+    return None
+
+
 def extract_state_update(text):
-    text = str(text); begin = text.find(STATE_UPDATE_BEGIN)
-    if begin == -1: return None
-    start = begin + len(STATE_UPDATE_BEGIN); end = text.find(STATE_UPDATE_END, start)
-    if end == -1: raise ValueError("STATE_UPDATE_END_MISSING")
-    if text.find(STATE_UPDATE_BEGIN, end + len(STATE_UPDATE_END)) != -1: raise ValueError("STATE_UPDATE_MULTIPLE_BLOCKS")
-    payload = text[start:end].strip()
-    if payload.startswith("```json"):
-        payload = payload[len("```json"):].strip(); payload = payload[:-3].strip() if payload.endswith("```") else payload
-    elif payload.startswith("```"):
-        payload = payload[3:].strip(); payload = payload[:-3].strip() if payload.endswith("```") else payload
-    if not payload: raise ValueError("STATE_UPDATE_EMPTY")
-    try: data = json.loads(payload)
-    except json.JSONDecodeError as exc: raise ValueError("STATE_UPDATE_INVALID_JSON") from exc
-    return parse_state_update_data(data)
+    text = str(text)
+
+    begin_match = _find_marker_line(
+        text,
+        STATE_UPDATE_BEGIN,
+    )
+
+    if begin_match is None:
+        return None
+
+    (
+        begin_start,
+        begin_content_end,
+        begin_line_end,
+    ) = begin_match
+
+    end_match = _find_marker_line(
+        text,
+        STATE_UPDATE_END,
+        start=begin_line_end,
+    )
+
+    if end_match is None:
+        raise ValueError(
+            "STATE_UPDATE_END_MISSING"
+        )
+
+    (
+        end_start,
+        end_content_end,
+        end_line_end,
+    ) = end_match
+
+    second = _find_marker_line(
+        text,
+        STATE_UPDATE_BEGIN,
+        start=end_line_end,
+    )
+
+    if second is not None:
+        raise ValueError(
+            "STATE_UPDATE_MULTIPLE_BLOCKS"
+        )
+
+    payload = text[
+        begin_line_end:end_start
+    ].strip()
+
+    if payload.startswith(
+        "```json"
+    ):
+        payload = payload[
+            len("```json"):
+        ].strip()
+
+        if payload.endswith(
+            "```"
+        ):
+            payload = payload[
+                :-3
+            ].strip()
+
+    elif payload.startswith(
+        "```"
+    ):
+        payload = payload[
+            3:
+        ].strip()
+
+        if payload.endswith(
+            "```"
+        ):
+            payload = payload[
+                :-3
+            ].strip()
+
+    if not payload:
+        raise ValueError(
+            "STATE_UPDATE_EMPTY"
+        )
+
+    try:
+        data = json.loads(
+            payload
+        )
+
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "STATE_UPDATE_INVALID_JSON"
+        ) from exc
+
+    return parse_state_update_data(
+        data
+    )
+
+
 def strip_state_update(text):
-    text = str(text); begin = text.find(STATE_UPDATE_BEGIN)
-    if begin == -1: return text
-    end = text.find(STATE_UPDATE_END, begin + len(STATE_UPDATE_BEGIN))
-    if end == -1: return text
-    return (text[:begin] + text[end + len(STATE_UPDATE_END):]).strip()
+    text = str(text)
+
+    begin_match = _find_marker_line(
+        text,
+        STATE_UPDATE_BEGIN,
+    )
+
+    if begin_match is None:
+        return text
+
+    (
+        begin_start,
+        begin_content_end,
+        begin_line_end,
+    ) = begin_match
+
+    end_match = _find_marker_line(
+        text,
+        STATE_UPDATE_END,
+        start=begin_line_end,
+    )
+
+    if end_match is None:
+        return text
+
+    (
+        end_start,
+        end_content_end,
+        end_line_end,
+    ) = end_match
+
+    result = (
+        text[:begin_start]
+        + text[end_line_end:]
+    )
+
+    return result.strip()
+
+
 def apply_state_update(store, session_id, update):
     if not isinstance(update, SessionStateUpdate): raise TypeError("STATE_UPDATE_INVALID_TYPE")
     session = store.get(session_id)
@@ -81,10 +238,13 @@ def apply_state_update(store, session_id, update):
 
 
 def state_update_protocol_prompt():
+
     return """STATE UPDATE PROTOCOL:
-After completing the requested work, optionally emit exactly one machine-readable state update block only when durable session state actually changed.
+
+After completing the requested work, emit exactly one machine-readable state update block at the end of your FINAL ASSISTANT RESPONSE when durable session state actually changed.
 
 NEXUS_STATE_UPDATE
+
 {
   "active_item": null,
   "completed_work": [],
@@ -93,17 +253,27 @@ NEXUS_STATE_UPDATE
   "clear_blockers": [],
   "checkpoint": null
 }
+
 NEXUS_STATE_UPDATE_END
 
 Rules:
-- The block is optional. Do not emit it when durable state did not change.
+
+- The block is optional only when durable session state did not change.
+- If durable session state changed, the final assistant response MUST contain the block.
+- The block must appear directly in the final assistant response.
+- NEVER send the block through memory_add, memory tools, delegation, shell, files, acceptance tools, or any other tool.
+- NEVER store the block as memory instead of returning it.
+- NEVER ask another agent to return the block on your behalf.
 - Output strict JSON only inside the block.
 - Use only the listed fields.
-- completed_work contains only work actually completed in this turn.
+- completed_work contains only work actually completed and verified in this turn.
 - pending_work, when provided, replaces the current pending list.
-- add_blockers contains newly discovered blockers.
+- add_blockers contains newly discovered blockers supported by evidence.
 - clear_blockers contains blockers actually resolved.
 - active_item is the next currently active work item when known.
 - checkpoint is a concise factual checkpoint for this successful turn when useful.
-- Never claim completion, blocker resolution, or project facts without evidence from the work performed.
+- Never claim completion, blocker resolution, or project facts without evidence from work actually performed.
+- The state-update block must be the last content in the final response.
+- Never emit more than one state-update block.
+
 """

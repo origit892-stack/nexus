@@ -388,3 +388,128 @@ def test_auto_checkpoint_off(
     ).working_state[
         "checkpoint_serial"
     ] == 0
+
+
+def test_resume_instruction_requires_state_update_for_completed_pending(
+    tmp_path,
+):
+    from nexus.sessions.resume import (
+        build_resume_instruction,
+    )
+    from nexus.sessions.store import (
+        SessionStore,
+    )
+
+    store = SessionStore(
+        tmp_path
+    )
+
+    session = store.create(
+        "Resume contract objective",
+        "Resume Contract",
+    )
+
+    pending = (
+        "Create resumed.txt containing exactly "
+        "WAVE5_RESUME_OK"
+    )
+
+    store.replace_pending(
+        session.id,
+        [
+            pending
+        ],
+    )
+
+    store.set_active_item(
+        session.id,
+        pending,
+    )
+
+    session = store.get(
+        session.id
+    )
+
+    instruction = build_resume_instruction(
+        session,
+        tmp_path,
+    )
+
+    assert (
+        "RESUME STATE CONTRACT:"
+        in instruction
+    )
+
+    assert (
+        "NEXUS_STATE_UPDATE"
+        in instruction
+    )
+
+    assert (
+        "completed_work"
+        in instruction
+    )
+
+    assert (
+        "pending_work"
+        in instruction
+    )
+
+    assert (
+        "active_item"
+        in instruction
+    )
+
+    assert (
+        "stop using tools"
+        in instruction
+    )
+
+
+def test_resume_instruction_requires_null_active_when_done(
+    tmp_path,
+):
+    from nexus.sessions.resume import (
+        build_resume_instruction,
+    )
+    from nexus.sessions.store import (
+        SessionStore,
+    )
+
+    store = SessionStore(
+        tmp_path
+    )
+
+    session = store.create(
+        "Finish pending work",
+        "Finish Pending",
+    )
+
+    store.replace_pending(
+        session.id,
+        [
+            "last item"
+        ],
+    )
+
+    session = store.get(
+        session.id
+    )
+
+    instruction = (
+        build_resume_instruction(
+            session,
+            tmp_path,
+        )
+        .lower()
+    )
+
+    assert (
+        "null when no pending work remains"
+        in instruction
+    )
+
+    assert (
+        "do not substitute memory_add"
+        in instruction
+    )
