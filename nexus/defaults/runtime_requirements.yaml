@@ -1,0 +1,33 @@
+schema_version: 1
+provider:
+  default: ollama
+  required: true
+  auto_install: true
+text_model:
+  required: true
+  provider: ollama
+  family: qwen
+  automatic_install: true
+  hardware_profile: auto
+vision_model:
+  required: false
+  provider: ollama
+  family: qwen-vl
+  preferred:
+  - qwen3-vl
+  - qwen2.5vl
+  - qwen2.5-vl
+  automatic_install: true
+  hardware_profile: auto
+  requires_real_inference_acceptance: true
+readiness:
+  commands_requiring_full_runtime:
+  - nexus
+  - run
+  - auto
+  commands_allowed_without_full_runtime:
+  - help
+  - version
+  - doctor
+  - models
+  - providers

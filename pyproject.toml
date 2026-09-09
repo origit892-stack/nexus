@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus"
+version = "1.6.0"
+description = "Local-first autonomous multi-agent runtime"
+requires-python = ">=3.11"
+dependencies = [
+  "openai",
+  "pydantic",
+  "typer",
+  "rich",
+  "PyYAML",
+  "psutil",
+  "httpx",
+  "tenacity",
+  "mcp",
+  "rapidfuzz>=3.0",
+  "beautifulsoup4",
+  "playwright",
+  "Pillow>=10",
+  "textual>=1.0",
+  "prompt-toolkit>=3.0,<4"
+]
+
+[project.scripts]
+nexus = "nexus.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nexus*"]
+
+[tool.setuptools.package-data]
+nexus = ["defaults/*.yaml"]
