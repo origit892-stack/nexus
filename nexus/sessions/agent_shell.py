@@ -177,6 +177,106 @@ def _execute_continue(
         return True
 
 
+def _show_status(
+    project_path,
+    session_id,
+):
+    """Display current session status information."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return
+
+    history_count = len(session.history) if session.history else 0
+
+    print()
+    print("=" * 50)
+    print(f"session_id: {session.id}")
+    print(f"title: {session.title}")
+    print(f"project_path: {session.project_path}")
+    print(f"status: {session.status}")
+    print(f"history_entries: {history_count}")
+
+    run_id = getattr(session, "run_id", None)
+    if run_id:
+        print(f"run_id: {run_id}")
+
+    print("=" * 50)
+    print()
+
+
+def _show_history(
+    project_path,
+    session_id,
+):
+    """Display conversation/session history in chronological order."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return
+
+    if not session.history or len(session.history) == 0:
+        print()
+        print("No history entries available.")
+        return
+
+    print()
+    print("=" * 50)
+    print("SESSION HISTORY")
+    print("=" * 50)
+    print()
+
+    for entry in session.history:
+        entry_type = str(entry.get("type", "UNKNOWN")).upper()
+        text = str(entry.get("text", "")).strip()
+
+        # Map internal types to display labels
+        if entry_type == "instruction":
+            display_type = "INSTRUCTION"
+        elif entry_type == "result":
+            display_type = "RESULT"
+        elif entry_type in ("failure", "error"):
+            display_type = "FAILURE"
+        elif entry_type == "interrupt":
+            display_type = "INTERRUPT"
+        else:
+            display_type = entry_type
+
+        # Only show entries with non-empty text for INSTRUCTION, RESULT types
+        if entry_type in ("instruction", "result") and not text:
+            continue
+
+        print(f"{display_type}: {text}")
+
+    print("=" * 50)
+    print()
+
+
+def _clear_display(
+    project_path,
+    session_id,
+):
+    """Clear terminal display but do NOT erase persisted session history."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        return
+
+    # Clear the terminal by printing blank lines and a separator
+    print()
+    print("=" * 50)
+    print("DISPLAY CLEARED")
+    print("=" * 50)
+    print()
+
+
 def run_agent_shell(
     project_path,
     session_id,
@@ -280,9 +380,11 @@ def run_agent_shell(
             instruction
         ).strip()
 
+        # Blank/whitespace input creates no history entry - just continue
         if not instruction:
             continue
 
+        # Handle commands
         if instruction.lower() in {
             "/back",
             "/exit",
@@ -297,13 +399,37 @@ def run_agent_shell(
 
         if instruction.lower() == "/help":
             print(
-                "Esc or /back : return to Nexus UI"
+                "Available commands:"
             )
-            print(
-                "Ctrl+C       : interrupt current turn"
+            print("  /status    : Show current session status")
+            print("  /history   : Display conversation history")
+            print("  /clear     : Clear terminal display")
+            print("  /back      : Return to Nexus UI")
+            print("  /exit      : Exit agent shell")
+            continue
+
+        if instruction.lower() == "/status":
+            _show_status(
+                project_path,
+                session_id,
             )
             continue
 
+        if instruction.lower() == "/history":
+            _show_history(
+                project_path,
+                session_id,
+            )
+            continue
+
+        if instruction.lower() == "/clear":
+            _clear_display(
+                project_path,
+                session_id,
+            )
+            continue
+
+        # Execute the instruction/turn
         _execute_continue(
             project_path,
             session_id,

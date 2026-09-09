@@ -77,6 +77,20 @@ def run_session(
             "Session interrupted by user."
         )
 
+        # Add interrupt entry to history for legacy sessions with missing/null history
+        if session.history is None:
+            session.history = []
+
+        session.history.append(
+            {
+                "type": "interrupt",
+                "text": (
+                    "Session interrupted by user."
+                ),
+                "created_at": utc_now(),
+            }
+        )
+
         store.save(
             session
         )
@@ -89,11 +103,24 @@ def run_session(
             exc
         )
 
+        # Add failure entry to history for legacy sessions with missing/null history
+        if session.history is None:
+            session.history = []
+
+        session.history.append(
+            {
+                "type": "failure",
+                "text": str(exc),
+                "created_at": utc_now(),
+            }
+        )
+
         store.save(
             session
         )
 
         raise
+
 
 def continue_session(
     project_path,
@@ -122,11 +149,11 @@ def continue_session(
         instruction
     ).strip()
 
+    # Blank/whitespace input creates no history entry - just return without raising
     if not instruction:
-        raise ValueError(
-            "CONTINUATION_EMPTY"
-        )
+        return
 
+    # Ensure history exists for legacy sessions with missing/null history
     if session.history is None:
         session.history = []
 
@@ -236,6 +263,10 @@ def continue_session(
             "Session interrupted by user."
         )
 
+        # Add interrupt entry to history for legacy sessions with missing/null history
+        if session.history is None:
+            session.history = []
+
         session.history.append(
             {
                 "type": "interrupt",
@@ -258,12 +289,14 @@ def continue_session(
             exc
         )
 
+        # Add failure entry to history for legacy sessions with missing/null history
+        if session.history is None:
+            session.history = []
+
         session.history.append(
             {
-                "type": "error",
-                "text": str(
-                    exc
-                ),
+                "type": "failure",
+                "text": str(exc),
                 "created_at": utc_now(),
             }
         )
@@ -273,4 +306,3 @@ def continue_session(
         )
 
         raise
-
