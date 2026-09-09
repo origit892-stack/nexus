@@ -6,18 +6,194 @@ import uuid
 from dataclasses import (
     asdict,
     dataclass,
+    field,
 )
+
 from datetime import (
     datetime,
     timezone,
 )
+
 from pathlib import Path
+
+
+SCHEMA_VERSION = 2
 
 
 def utc_now():
     return datetime.now(
         timezone.utc
     ).isoformat()
+
+
+def _normalize_list(value):
+    if not isinstance(
+        value,
+        list,
+    ):
+        return []
+
+    return [
+        str(item)
+        for item in value
+        if str(item).strip()
+    ]
+
+
+def _normalize_working_state(
+    value,
+    *,
+    objective=None,
+):
+    value = (
+        value
+        if isinstance(
+            value,
+            dict,
+        )
+        else {}
+    )
+
+    return {
+        "objective": (
+            value.get(
+                "objective"
+            )
+            if value.get(
+                "objective"
+            )
+            is not None
+            else objective
+        ),
+        "current_plan": _normalize_list(
+            value.get(
+                "current_plan"
+            )
+        ),
+        "completed_work": _normalize_list(
+            value.get(
+                "completed_work"
+            )
+        ),
+        "pending_work": _normalize_list(
+            value.get(
+                "pending_work"
+            )
+        ),
+        "blockers": _normalize_list(
+            value.get(
+                "blockers"
+            )
+        ),
+        "last_checkpoint": value.get(
+            "last_checkpoint"
+        ),
+        "updated_at": value.get(
+            "updated_at"
+        ),
+    }
+
+
+def _normalize_context_state(
+    value,
+):
+    value = (
+        value
+        if isinstance(
+            value,
+            dict,
+        )
+        else {}
+    )
+
+    compacted = value.get(
+        "compacted_through",
+        0,
+    )
+
+    recent_window = value.get(
+        "recent_window",
+        12,
+    )
+
+    try:
+        compacted = int(
+            compacted
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        compacted = 0
+
+    try:
+        recent_window = int(
+            recent_window
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        recent_window = 12
+
+    return {
+        "summary": value.get(
+            "summary"
+        ),
+        "durable_facts": _normalize_list(
+            value.get(
+                "durable_facts"
+            )
+        ),
+        "compacted_through": max(
+            0,
+            compacted,
+        ),
+        "recent_window": max(
+            1,
+            recent_window,
+        ),
+        "updated_at": value.get(
+            "updated_at"
+        ),
+    }
+
+
+def _normalize_resume_state(
+    value,
+):
+    value = (
+        value
+        if isinstance(
+            value,
+            dict,
+        )
+        else {}
+    )
+
+    return {
+        "last_run_id": value.get(
+            "last_run_id"
+        ),
+        "last_status": value.get(
+            "last_status"
+        ),
+        "last_instruction": value.get(
+            "last_instruction"
+        ),
+        "continuation_point": value.get(
+            "continuation_point"
+        ),
+        "interrupted": bool(
+            value.get(
+                "interrupted",
+                False,
+            )
+        ),
+        "updated_at": value.get(
+            "updated_at"
+        ),
+    }
 
 
 @dataclass
@@ -32,6 +208,20 @@ class NexusSession:
     run_id: str | None = None
     last_result: str | None = None
     history: list[dict] | None = None
+
+    schema_version: int = SCHEMA_VERSION
+
+    working_state: dict = field(
+        default_factory=dict
+    )
+
+    context_state: dict = field(
+        default_factory=dict
+    )
+
+    resume_state: dict = field(
+        default_factory=dict
+    )
 
 
 class SessionStore:
@@ -63,6 +253,168 @@ class SessionStore:
             / f"{session_id}.json"
         )
 
+    def _normalize_raw(
+        self,
+        raw,
+    ):
+        if not isinstance(
+            raw,
+            dict,
+        ):
+            raise ValueError(
+                "SESSION_JSON_NOT_OBJECT"
+            )
+
+        history = raw.get(
+            "history"
+        )
+
+        if not isinstance(
+            history,
+            list,
+        ):
+            history = []
+
+            objective = raw.get(
+                "objective"
+            )
+
+            if objective:
+                history.append(
+                    {
+                        "type": "objective",
+                        "text": objective,
+                        "created_at": raw.get(
+                            "created_at"
+                        ),
+                    }
+                )
+
+            last_result = raw.get(
+                "last_result"
+            )
+
+            if last_result:
+                history.append(
+                    {
+                        "type": "result",
+                        "text": last_result,
+                        "created_at": raw.get(
+                            "updated_at"
+                        ),
+                    }
+                )
+
+        schema_version = raw.get(
+            "schema_version",
+            SCHEMA_VERSION,
+        )
+
+        try:
+            schema_version = int(
+                schema_version
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            schema_version = SCHEMA_VERSION
+
+        if schema_version < SCHEMA_VERSION:
+            schema_version = SCHEMA_VERSION
+
+        raw = dict(raw)
+
+        raw["history"] = history
+
+        raw["schema_version"] = (
+            schema_version
+        )
+
+        raw["working_state"] = (
+            _normalize_working_state(
+                raw.get(
+                    "working_state"
+                ),
+                objective=raw.get(
+                    "objective"
+                ),
+            )
+        )
+
+        raw["context_state"] = (
+            _normalize_context_state(
+                raw.get(
+                    "context_state"
+                )
+            )
+        )
+
+        raw["resume_state"] = (
+            _normalize_resume_state(
+                raw.get(
+                    "resume_state"
+                )
+            )
+        )
+
+        return raw
+
+    def _normalize_session(
+        self,
+        session,
+    ):
+        session.schema_version = max(
+            SCHEMA_VERSION,
+            int(
+                getattr(
+                    session,
+                    "schema_version",
+                    SCHEMA_VERSION,
+                )
+                or SCHEMA_VERSION
+            ),
+        )
+
+        session.working_state = (
+            _normalize_working_state(
+                getattr(
+                    session,
+                    "working_state",
+                    None,
+                ),
+                objective=session.objective,
+            )
+        )
+
+        session.context_state = (
+            _normalize_context_state(
+                getattr(
+                    session,
+                    "context_state",
+                    None,
+                )
+            )
+        )
+
+        session.resume_state = (
+            _normalize_resume_state(
+                getattr(
+                    session,
+                    "resume_state",
+                    None,
+                )
+            )
+        )
+
+        if not isinstance(
+            session.history,
+            list,
+        ):
+            session.history = []
+
+        return session
+
     def create(
         self,
         objective,
@@ -89,9 +441,7 @@ class SessionStore:
         clean_title = (
             str(title).strip()
             if title
-            else objective[
-                :72
-            ]
+            else objective[:72]
         )
 
         now = utc_now()
@@ -113,6 +463,23 @@ class SessionStore:
                     "created_at": now,
                 }
             ],
+            schema_version=SCHEMA_VERSION,
+            working_state=(
+                _normalize_working_state(
+                    None,
+                    objective=objective,
+                )
+            ),
+            context_state=(
+                _normalize_context_state(
+                    None
+                )
+            ),
+            resume_state=(
+                _normalize_resume_state(
+                    None
+                )
+            ),
         )
 
         self.save(
@@ -125,6 +492,12 @@ class SessionStore:
         self,
         session,
     ):
+        session = (
+            self._normalize_session(
+                session
+            )
+        )
+
         session.updated_at = (
             utc_now()
         )
@@ -139,7 +512,9 @@ class SessionStore:
 
         temp.write_text(
             json.dumps(
-                asdict(session),
+                asdict(
+                    session
+                ),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -160,50 +535,17 @@ class SessionStore:
         if not path.exists():
             return None
 
-        try:
-            raw = json.loads(
-                path.read_text()
-            )
+        raw = json.loads(
+            path.read_text()
+        )
 
-            if not isinstance(raw.get("history"), list):
-                raw["history"] = []
+        raw = self._normalize_raw(
+            raw
+        )
 
-                objective = raw.get(
-                    "objective"
-                )
-
-                if objective:
-                    raw["history"].append(
-                        {
-                            "type": "objective",
-                            "text": objective,
-                            "created_at": raw.get(
-                                "created_at"
-                            ),
-                        }
-                    )
-
-                last_result = raw.get(
-                    "last_result"
-                )
-
-                if last_result:
-                    raw["history"].append(
-                        {
-                            "type": "result",
-                            "text": last_result,
-                            "created_at": raw.get(
-                                "updated_at"
-                            ),
-                        }
-                    )
-
-            return NexusSession(
-                **raw
-            )
-
-        except Exception:
-            return None
+        return NexusSession(
+            **raw
+        )
 
     def list(
         self,
@@ -218,38 +560,9 @@ class SessionStore:
                     path.read_text()
                 )
 
-                if not isinstance(raw.get("history"), list):
-                    raw["history"] = []
-
-                    objective = raw.get(
-                        "objective"
-                    )
-
-                    if objective:
-                        raw["history"].append(
-                            {
-                                "type": "objective",
-                                "text": objective,
-                                "created_at": raw.get(
-                                    "created_at"
-                                ),
-                            }
-                        )
-
-                    last_result = raw.get(
-                        "last_result"
-                    )
-
-                    if last_result:
-                        raw["history"].append(
-                            {
-                                "type": "result",
-                                "text": last_result,
-                                "created_at": raw.get(
-                                    "updated_at"
-                                ),
-                            }
-                        )
+                raw = self._normalize_raw(
+                    raw
+                )
 
                 result.append(
                     NexusSession(
@@ -257,12 +570,16 @@ class SessionStore:
                     )
                 )
 
-            except Exception:
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
                 continue
 
         result.sort(
-            key=lambda s: (
-                s.updated_at
+            key=lambda session: (
+                session.updated_at
             ),
             reverse=True,
         )
@@ -283,3 +600,259 @@ class SessionStore:
         path.unlink()
 
         return True
+
+    def update_working_state(
+        self,
+        session_id,
+        **changes,
+    ):
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        state = dict(
+            session.working_state
+        )
+
+        for key, value in changes.items():
+            if key not in state:
+                continue
+
+            if key in {
+                "current_plan",
+                "completed_work",
+                "pending_work",
+                "blockers",
+            }:
+                state[key] = (
+                    _normalize_list(
+                        value
+                    )
+                )
+            else:
+                state[key] = value
+
+        state["updated_at"] = (
+            utc_now()
+        )
+
+        session.working_state = state
+
+        self.save(
+            session
+        )
+
+        return session
+
+    def set_objective(
+        self,
+        session_id,
+        objective,
+    ):
+        objective = str(
+            objective
+        ).strip()
+
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        session.objective = objective
+
+        session.working_state[
+            "objective"
+        ] = objective
+
+        session.working_state[
+            "updated_at"
+        ] = utc_now()
+
+        self.save(
+            session
+        )
+
+        return session
+
+    def replace_plan(
+        self,
+        session_id,
+        items,
+    ):
+        return self.update_working_state(
+            session_id,
+            current_plan=items,
+        )
+
+    def append_completed(
+        self,
+        session_id,
+        text,
+    ):
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        text = str(
+            text
+        ).strip()
+
+        items = list(
+            session.working_state[
+                "completed_work"
+            ]
+        )
+
+        if text and text not in items:
+            items.append(
+                text
+            )
+
+        return self.update_working_state(
+            session_id,
+            completed_work=items,
+        )
+
+    def replace_pending(
+        self,
+        session_id,
+        items,
+    ):
+        return self.update_working_state(
+            session_id,
+            pending_work=items,
+        )
+
+    def add_blocker(
+        self,
+        session_id,
+        text,
+    ):
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        text = str(
+            text
+        ).strip()
+
+        items = list(
+            session.working_state[
+                "blockers"
+            ]
+        )
+
+        if text and text not in items:
+            items.append(
+                text
+            )
+
+        return self.update_working_state(
+            session_id,
+            blockers=items,
+        )
+
+    def clear_blocker(
+        self,
+        session_id,
+        text,
+    ):
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        text = str(
+            text
+        ).strip()
+
+        items = [
+            item
+            for item in session.working_state[
+                "blockers"
+            ]
+            if item != text
+        ]
+
+        return self.update_working_state(
+            session_id,
+            blockers=items,
+        )
+
+    def set_checkpoint(
+        self,
+        session_id,
+        text,
+    ):
+        return self.update_working_state(
+            session_id,
+            last_checkpoint=(
+                str(text).strip()
+            ),
+        )
+
+    def add_durable_fact(
+        self,
+        session_id,
+        text,
+    ):
+        session = self.get(
+            session_id
+        )
+
+        if session is None:
+            raise KeyError(
+                session_id
+            )
+
+        text = str(
+            text
+        ).strip()
+
+        facts = list(
+            session.context_state[
+                "durable_facts"
+            ]
+        )
+
+        if text and text not in facts:
+            facts.append(
+                text
+            )
+
+        session.context_state[
+            "durable_facts"
+        ] = facts
+
+        session.context_state[
+            "updated_at"
+        ] = utc_now()
+
+        self.save(
+            session
+        )
+
+        return session

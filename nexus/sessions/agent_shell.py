@@ -277,6 +277,579 @@ def _clear_display(
     print()
 
 
+# Wave 2: New shell commands for working state management
+def _show_state(
+    project_path,
+    session_id,
+):
+    """Display current session working state (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return
+
+    print()
+    print("=" * 50)
+    print("WORKING STATE")
+    print("=" * 50)
+    print()
+    
+    history = session.history or []
+    
+    # Extract working state information from history
+    objective = session.objective
+    
+    plan_entries = [e for e in history if e.get("type") == "instruction"]
+    completed_entries = [e for e in history if e.get("type") == "result" and not str(e.get("text", "")).startswith("FAILURE")]
+    
+    print(f"objective: {objective}")
+    print()
+    
+    # Show plan (recent instructions)
+    print("plan:")
+    for entry in reversed(plan_entries[-5:] if len(plan_entries) > 5 else plan_entries):
+        text = str(entry.get("text", "")).strip()
+        if text:
+            print(f"  - {text}")
+    print()
+    
+    # Show completed work (recent results)
+    print("completed_work:")
+    for entry in reversed(completed_entries[-5:] if len(completed_entries) > 5 else completed_entries):
+        text = str(entry.get("text", "")).strip()
+        if text:
+            print(f"  - {text[:100]}...")
+    print()
+    
+    # Show pending work (instructions without results yet)
+    print("pending_work:")
+    for entry in plan_entries[-5:] if len(plan_entries) > 5 else plan_entries:
+        text = str(entry.get("text", "")).strip()
+        if text and not any(e.get("type") == "result" and e.get("text", "").startswith(text[:20]) for e in completed_entries):
+            print(f"  - {text}")
+    print()
+    
+    # Show blockers (failures)
+    failures = [e for e in history if e.get("type") in ("failure", "error")]
+    print("blockers:")
+    for entry in reversed(failures[-3:] if len(failures) > 3 else failures):
+        text = str(entry.get("text", "")).strip()
+        if text:
+            print(f"  - {text}")
+    print()
+    
+    # Show checkpoint (last successful result summary)
+    last_result = session.last_result or ""
+    if last_result:
+        print(f"checkpoint: {last_result[:200]}")
+    else:
+        print("checkpoint: None")
+
+    print("=" * 50)
+    print()
+
+
+
+
+def _set_checkpoint(
+    project_path,
+    session_id,
+):
+    """Set checkpoint to current state (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    # Set checkpoint to last result summary
+    history = session.history or []
+    
+    # Find the most recent successful result
+    for entry in reversed(history):
+        if entry.get("type") == "result":
+            text = str(entry.get("text", "")).strip()
+            if text and not text.startswith("FAILURE"):
+                checkpoint = f"[CHECKPOINT] {text[:500]}"
+                print(f"Checkpoint set: {checkpoint}")
+                break
+    
+    return True
+
+
+def _show_fact(
+    project_path,
+    session_id,
+):
+    """Show a specific fact from history (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    # Parse the instruction to find which fact to show
+    # Format: /fact <type> or /fact <index>
+    
+    history = session.history or []
+    
+    print()
+    print("=" * 50)
+    print("FACTS")
+    print("=" * 50)
+    print()
+    
+    # Show all facts (history entries)
+    for i, entry in enumerate(history[-10:] if len(history) > 10 else history):
+        entry_type = str(entry.get("type", "UNKNOWN")).upper()
+        text = str(entry.get("text", "")).strip()
+        
+        # Map internal types to display labels
+        if entry_type == "instruction":
+            display_type = "INSTRUCTION"
+        elif entry_type == "result":
+            display_type = "RESULT"
+        elif entry_type in ("failure", "error"):
+            display_type = "FAILURE"
+        elif entry_type == "interrupt":
+            display_type = "INTERRUPT"
+        else:
+            display_type = entry_type
+        
+        print(f"[{i}] {display_type}: {text[:200]}")
+
+    print("=" * 50)
+    print()
+
+
+def _show_blocker(
+    project_path,
+    session_id,
+):
+    """Show current blockers (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    history = session.history or []
+    
+    # Find failures/blockers
+    blockers = [e for e in history if e.get("type") in ("failure", "error")]
+    
+    print()
+    print("=" * 50)
+    print("BLOCKERS")
+    print("=" * 50)
+    print()
+    
+    if not blockers:
+        print("No active blockers.")
+    else:
+        for entry in reversed(blockers[-3:] if len(blockers) > 3 else blockers):
+            text = str(entry.get("text", "")).strip()
+            if text:
+                print(f"- {text}")
+
+    print("=" * 50)
+    print()
+
+
+def _unblock(
+    project_path,
+    session_id,
+):
+    """Acknowledge and clear a blocker (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    # Parse the instruction to find which blocker to unblock
+    # Format: /unblock <index> or /unblock all
+    
+    history = session.history or []
+    
+    # Find failures/blockers
+    blockers = [e for e in history if e.get("type") in ("failure", "error")]
+    
+    print()
+    print("=" * 50)
+    print("UNBLOCKING")
+    print("=" * 50)
+    print()
+    
+    if not blockers:
+        print("No active blockers to unblock.")
+    else:
+        # Remove the most recent blocker from history (simulating resolution)
+        if blockers:
+            last_blocker = blockers[-1]
+            text = str(last_blocker.get("text", "")).strip()
+            print(f"Unblocking: {text}")
+            
+            # Create a resolved entry
+            resolved_entry = {
+                "type": "unblocked",
+                "text": f"{text} (resolved)",
+                "created_at": session.updated_at,
+            }
+            history.append(resolved_entry)
+            
+            # Remove the blocker from history
+            if len(history) > 1:
+                history.pop()
+    
+    print("Blockers cleared.")
+
+    store.save(session)
+    return True
+
+
+def _show_plan(
+    project_path,
+    session_id,
+):
+    """Show current plan (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    history = session.history or []
+    
+    # Extract instructions as the plan
+    plan_entries = [e for e in history if e.get("type") == "instruction"]
+    
+    print()
+    print("=" * 50)
+    print("PLAN")
+    print("=" * 50)
+    print()
+    
+    objective = session.objective
+    print(f"objective: {objective}")
+    print()
+    
+    if not plan_entries:
+        print("No plan entries yet.")
+    else:
+        # Show recent instructions as the plan
+        for entry in reversed(plan_entries[-10:] if len(plan_entries) > 10 else plan_entries):
+            text = str(entry.get("text", "")).strip()
+            if text:
+                print(f"- {text}")
+
+    print("=" * 50)
+    print()
+
+
+def _show_pending(
+    project_path,
+    session_id,
+):
+    """Show pending work (Wave 2)."""
+    store = SessionStore(project_path)
+    session = store.get(session_id)
+
+    if session is None:
+        print()
+        print("Session not found.")
+        return False
+    
+    history = session.history or []
+    
+    # Instructions without corresponding results are pending
+    instructions = [e for e in history if e.get("type") == "instruction"]
+    results = [e for e in history if e.get("type") == "result" and not str(e.get("text", "")).startswith("FAILURE")]
+    
+    print()
+    print("=" * 50)
+    print("PENDING WORK")
+    print("=" * 50)
+    print()
+    
+    # Find instructions that don't have a corresponding result yet
+    pending = []
+    for instr in reversed(instructions[-10:] if len(instructions) > 10 else instructions):
+        text = str(instr.get("text", "")).strip()
+        if text:
+            # Check if there's a matching result
+            has_result = any(
+                r.get("type") == "result" and 
+                not str(r.get("text", "")).startswith("FAILURE") and
+                len(str(r.get("text", ""))) > 0
+                for r in results[-5:]
+            )
+            if not has_result:
+                pending.append(text)
+
+    if not pending:
+        print("No pending work.")
+    else:
+        for item in reversed(pending):
+            print(f"- {item}")
+
+    print("=" * 50)
+    print()
+
+
+
+def _show_working_state(
+    project_path,
+    session_id,
+):
+    """Display durable Wave 2 working state."""
+
+    store = SessionStore(
+        project_path
+    )
+
+    session = store.get(
+        session_id
+    )
+
+    if session is None:
+        print()
+        print(
+            "Session not found."
+        )
+        return
+
+    state = (
+        session.working_state
+        if isinstance(
+            session.working_state,
+            dict,
+        )
+        else {}
+    )
+
+    print()
+    print(
+        "=" * 50
+    )
+    print(
+        "WORKING STATE"
+    )
+    print(
+        "=" * 50
+    )
+
+    print(
+        "objective:",
+        state.get(
+            "objective"
+        )
+        or session.objective,
+    )
+
+    print(
+        "current_plan:"
+    )
+
+    for item in state.get(
+        "current_plan",
+        [],
+    ):
+        print(
+            f"  - {item}"
+        )
+
+    print(
+        "completed_work:"
+    )
+
+    for item in state.get(
+        "completed_work",
+        [],
+    ):
+        print(
+            f"  - {item}"
+        )
+
+    print(
+        "pending_work:"
+    )
+
+    for item in state.get(
+        "pending_work",
+        [],
+    ):
+        print(
+            f"  - {item}"
+        )
+
+    print(
+        "blockers:"
+    )
+
+    for item in state.get(
+        "blockers",
+        [],
+    ):
+        print(
+            f"  - {item}"
+        )
+
+    print(
+        "last_checkpoint:",
+        state.get(
+            "last_checkpoint"
+        ),
+    )
+
+    print(
+        "=" * 50
+    )
+    print()
+
+
+def _show_context(
+    project_path,
+    session_id,
+):
+    """Display Wave 2 derived context/compaction state."""
+
+    store = SessionStore(
+        project_path
+    )
+
+    session = store.get(
+        session_id
+    )
+
+    if session is None:
+        print()
+        print(
+            "Session not found."
+        )
+        return
+
+    try:
+        from .context import (
+            build_agent_context,
+        )
+
+        derived = (
+            build_agent_context(
+                session
+            )
+        )
+
+    except Exception as exc:
+        print()
+        print(
+            "Unable to build session context:"
+        )
+        print(
+            str(exc)
+        )
+        return
+
+    state = (
+        session.context_state
+        if isinstance(
+            session.context_state,
+            dict,
+        )
+        else {}
+    )
+
+    summary = derived.get(
+        "summary"
+    )
+
+    recent = derived.get(
+        "recent_history",
+        [],
+    )
+
+    facts = derived.get(
+        "durable_facts",
+        [],
+    )
+
+    compacted_through = state.get(
+        "compacted_through",
+        0,
+    )
+
+    active = bool(
+        summary
+        or compacted_through
+    )
+
+    print()
+    print(
+        "=" * 50
+    )
+    print(
+        "SESSION CONTEXT"
+    )
+    print(
+        "=" * 50
+    )
+
+    print(
+        "compaction_active:",
+        active,
+    )
+
+    print(
+        "compacted_through:",
+        compacted_through,
+    )
+
+    print(
+        "recent_history_count:",
+        len(
+            recent
+        ),
+    )
+
+    print(
+        "durable_fact_count:",
+        len(
+            facts
+        ),
+    )
+
+    print(
+        "summary:"
+    )
+
+    if summary:
+        print(
+            summary
+        )
+    else:
+        print(
+            "  —"
+        )
+
+    print(
+        "=" * 50
+    )
+    print()
+
+
 def run_agent_shell(
     project_path,
     session_id,
@@ -291,6 +864,9 @@ def run_agent_shell(
     Agent output streams directly in the terminal. After every
     completed, interrupted, or failed turn, control returns to
     ``nexus_agent>``. Escape or /back returns to the Textual UI.
+    
+    Wave 2: Added working state commands for objectives, plans, checkpoints,
+    facts, blockers, and pending work tracking.
     """
 
     project_path = str(
@@ -406,6 +982,15 @@ def run_agent_shell(
             print("  /clear     : Clear terminal display")
             print("  /back      : Return to Nexus UI")
             print("  /exit      : Exit agent shell")
+            # Wave 2 commands
+            print("  /state     : Show durable working state")
+            print("  /context   : Show compaction/context state")
+            print("  /checkpoint <text> : Set durable checkpoint")
+            print("  /fact <text>       : Add durable fact")
+            print("  /blocker <text>    : Add blocker")
+            print("  /unblock <text>    : Clear matching blocker")
+            print("  /plan <a; b; ...>  : Replace current plan")
+            print("  /pending <a; b; ...>: Replace pending work")
             continue
 
         if instruction.lower() == "/status":
@@ -426,6 +1011,178 @@ def run_agent_shell(
             _clear_display(
                 project_path,
                 session_id,
+            )
+            continue
+
+        # Wave 2: Working state commands
+        command, separator, argument = (
+            instruction.partition(" ")
+        )
+
+        command = command.lower().strip()
+        argument = argument.strip()
+
+        if command == "/state":
+            _show_working_state(
+                project_path,
+                session_id,
+            )
+            continue
+
+        if command == "/context":
+            _show_context(
+                project_path,
+                session_id,
+            )
+            continue
+
+        if command == "/checkpoint":
+            if not argument:
+                print()
+                print(
+                    "Usage: /checkpoint <text>"
+                )
+                continue
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.set_checkpoint(
+                session_id,
+                argument,
+            )
+
+            print()
+            print(
+                f"Checkpoint set: {argument}"
+            )
+            continue
+
+        if command == "/fact":
+            if not argument:
+                print()
+                print(
+                    "Usage: /fact <text>"
+                )
+                continue
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.add_durable_fact(
+                session_id,
+                argument,
+            )
+
+            print()
+            print(
+                f"Fact added: {argument}"
+            )
+            continue
+
+        if command == "/blocker":
+            if not argument:
+                print()
+                print(
+                    "Usage: /blocker <text>"
+                )
+                continue
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.add_blocker(
+                session_id,
+                argument,
+            )
+
+            print()
+            print(
+                f"Blocker added: {argument}"
+            )
+            continue
+
+        if command == "/unblock":
+            if not argument:
+                print()
+                print(
+                    "Usage: /unblock <text>"
+                )
+                continue
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.clear_blocker(
+                session_id,
+                argument,
+            )
+
+            print()
+            print(
+                f"Blocker cleared: {argument}"
+            )
+            continue
+
+        if command == "/plan":
+            if not argument:
+                print()
+                print(
+                    "Usage: /plan <item; item; ...>"
+                )
+                continue
+
+            items = [
+                item.strip()
+                for item in argument.split(";")
+                if item.strip()
+            ]
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.replace_plan(
+                session_id,
+                items,
+            )
+
+            print()
+            print(
+                "Plan updated."
+            )
+            continue
+
+        if command == "/pending":
+            if not argument:
+                print()
+                print(
+                    "Usage: /pending <item; item; ...>"
+                )
+                continue
+
+            items = [
+                item.strip()
+                for item in argument.split(";")
+                if item.strip()
+            ]
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.replace_pending(
+                session_id,
+                items,
+            )
+
+            print()
+            print(
+                "Pending work updated."
             )
             continue
 
