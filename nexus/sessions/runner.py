@@ -400,6 +400,57 @@ def continue_session(
             session
         )
 
+        refreshed = store.get(
+            session_id
+        )
+
+        if (
+            refreshed is not None
+            and refreshed.working_state.get(
+                "auto_checkpoint",
+                True,
+            )
+        ):
+            next_serial = (
+                int(
+                    refreshed.working_state.get(
+                        "checkpoint_serial",
+                        0,
+                    )
+                    or 0
+                )
+                + 1
+            )
+
+            clean_instruction = (
+                str(
+                    instruction
+                )
+                .strip()
+                .replace(
+                    "\n",
+                    " ",
+                )
+            )
+
+            if len(
+                clean_instruction
+            ) > 160:
+                clean_instruction = (
+                    clean_instruction[:160]
+                    + "..."
+                )
+
+            checkpoint = (
+                f"Turn {next_serial} completed: "
+                f"{clean_instruction}"
+            )
+
+            store.increment_checkpoint(
+                session_id,
+                checkpoint,
+            )
+
         return result
 
     except KeyboardInterrupt:

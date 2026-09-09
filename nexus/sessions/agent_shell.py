@@ -12,7 +12,10 @@ from .runner import (
     continue_session,
     run_session,
 )
-from .store import SessionStore
+from .resume import (
+    build_resume_instruction,
+)
+from .store import SessionStore, utc_now
 
 
 ESCAPE_RESULT = "__NEXUS_AGENT_SHELL_ESCAPE__"
@@ -1184,6 +1187,136 @@ def run_agent_shell(
             print(
                 "Pending work updated."
             )
+            continue
+
+
+        if command == "/done":
+            if not argument:
+                print()
+                print("Usage: /done <text>")
+                continue
+
+            store = SessionStore(project_path)
+            store.mark_done(
+                session_id,
+                argument,
+            )
+
+            print()
+            print(
+                f"Completed: {argument}"
+            )
+            continue
+
+        if command == "/next":
+            if argument:
+                print()
+                print("Usage: /next")
+                continue
+
+            store = SessionStore(project_path)
+
+            selected = (
+                store.select_next_pending(
+                    session_id
+                )
+            )
+
+            print()
+
+            if selected is None:
+                print("No pending work.")
+            else:
+                print(
+                    f"Active item: {selected}"
+                )
+
+            continue
+
+        if command == "/autocheckpoint":
+            mode = argument.lower()
+
+            if mode not in {
+                "on",
+                "off",
+            }:
+                print()
+                print(
+                    "Usage: /autocheckpoint on|off"
+                )
+                continue
+
+            enabled = (
+                mode == "on"
+            )
+
+            store = SessionStore(
+                project_path
+            )
+
+            store.set_auto_checkpoint(
+                session_id,
+                enabled,
+            )
+
+            print()
+            print(
+                "Automatic checkpointing: "
+                + (
+                    "ON"
+                    if enabled
+                    else "OFF"
+                )
+            )
+            continue
+
+        if command == "/resume":
+            if argument:
+                print()
+                print("Usage: /resume")
+                continue
+
+            store = SessionStore(
+                project_path
+            )
+
+            session = store.get(
+                session_id
+            )
+
+            if session is None:
+                raise KeyError(
+                    session_id
+                )
+
+            now = utc_now()
+
+            session.resume_state[
+                "resume_requested_at"
+            ] = now
+
+            session.resume_state[
+                "updated_at"
+            ] = now
+
+            store.save(
+                session
+            )
+
+            resume_instruction = (
+                build_resume_instruction(
+                    session,
+                    project_path,
+                )
+            )
+
+            _execute_continue(
+                project_path,
+                session_id,
+                resume_instruction,
+            )
+
+            turns += 1
             continue
 
         # Execute the instruction/turn

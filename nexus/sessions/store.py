@@ -54,6 +54,21 @@ def _normalize_working_state(
         else {}
     )
 
+    checkpoint_serial = value.get(
+        "checkpoint_serial",
+        0,
+    )
+
+    try:
+        checkpoint_serial = int(
+            checkpoint_serial
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        checkpoint_serial = 0
+
     return {
         "objective": (
             value.get(
@@ -87,6 +102,22 @@ def _normalize_working_state(
         ),
         "last_checkpoint": value.get(
             "last_checkpoint"
+        ),
+        "active_item": value.get(
+            "active_item"
+        ),
+        "last_completed_item": value.get(
+            "last_completed_item"
+        ),
+        "checkpoint_serial": max(
+            0,
+            checkpoint_serial,
+        ),
+        "auto_checkpoint": bool(
+            value.get(
+                "auto_checkpoint",
+                True,
+            )
         ),
         "updated_at": value.get(
             "updated_at"
@@ -189,6 +220,9 @@ def _normalize_resume_state(
                 "interrupted",
                 False,
             )
+        ),
+        "resume_requested_at": value.get(
+            "resume_requested_at"
         ),
         "updated_at": value.get(
             "updated_at"
@@ -856,3 +890,276 @@ class SessionStore:
         )
 
         return session
+
+
+def _store_get_required(
+    store,
+    session_id,
+):
+    session = store.get(
+        session_id
+    )
+
+    if session is None:
+        raise KeyError(
+            session_id
+        )
+
+    return session
+
+
+def _clean_text(
+    value,
+):
+    return str(
+        value
+    ).strip()
+
+
+def _session_store_set_active_item(
+    self,
+    session_id,
+    text,
+):
+    session = _store_get_required(
+        self,
+        session_id,
+    )
+
+    value = (
+        None
+        if text is None
+        else _clean_text(
+            text
+        )
+    )
+
+    if value == "":
+        value = None
+
+    session.working_state[
+        "active_item"
+    ] = value
+
+    session.working_state[
+        "updated_at"
+    ] = utc_now()
+
+    self.save(
+        session
+    )
+
+    return session
+
+
+def _session_store_mark_done(
+    self,
+    session_id,
+    text,
+):
+    text = _clean_text(
+        text
+    )
+
+    if not text:
+        raise ValueError(
+            "SESSION_DONE_EMPTY"
+        )
+
+    session = _store_get_required(
+        self,
+        session_id,
+    )
+
+    completed = list(
+        session.working_state[
+            "completed_work"
+        ]
+    )
+
+    if text not in completed:
+        completed.append(
+            text
+        )
+
+    pending = [
+        item
+        for item in session.working_state[
+            "pending_work"
+        ]
+        if item != text
+    ]
+
+    session.working_state[
+        "completed_work"
+    ] = completed
+
+    session.working_state[
+        "pending_work"
+    ] = pending
+
+    if (
+        session.working_state.get(
+            "active_item"
+        )
+        == text
+    ):
+        session.working_state[
+            "active_item"
+        ] = None
+
+    session.working_state[
+        "last_completed_item"
+    ] = text
+
+    session.working_state[
+        "updated_at"
+    ] = utc_now()
+
+    self.save(
+        session
+    )
+
+    return session
+
+
+def _session_store_select_next_pending(
+    self,
+    session_id,
+):
+    session = _store_get_required(
+        self,
+        session_id,
+    )
+
+    completed = set(
+        session.working_state[
+            "completed_work"
+        ]
+    )
+
+    selected = None
+
+    for item in session.working_state[
+        "pending_work"
+    ]:
+        if item not in completed:
+            selected = item
+            break
+
+    session.working_state[
+        "active_item"
+    ] = selected
+
+    session.working_state[
+        "updated_at"
+    ] = utc_now()
+
+    self.save(
+        session
+    )
+
+    return selected
+
+
+def _session_store_increment_checkpoint(
+    self,
+    session_id,
+    text=None,
+):
+    session = _store_get_required(
+        self,
+        session_id,
+    )
+
+    serial = session.working_state.get(
+        "checkpoint_serial",
+        0,
+    )
+
+    try:
+        serial = int(
+            serial
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        serial = 0
+
+    serial += 1
+
+    session.working_state[
+        "checkpoint_serial"
+    ] = serial
+
+    if text is not None:
+        clean = _clean_text(
+            text
+        )
+
+        session.working_state[
+            "last_checkpoint"
+        ] = (
+            clean
+            if clean
+            else None
+        )
+
+    session.working_state[
+        "updated_at"
+    ] = utc_now()
+
+    self.save(
+        session
+    )
+
+    return session
+
+
+def _session_store_set_auto_checkpoint(
+    self,
+    session_id,
+    enabled,
+):
+    session = _store_get_required(
+        self,
+        session_id,
+    )
+
+    session.working_state[
+        "auto_checkpoint"
+    ] = bool(
+        enabled
+    )
+
+    session.working_state[
+        "updated_at"
+    ] = utc_now()
+
+    self.save(
+        session
+    )
+
+    return session
+
+
+SessionStore.set_active_item = (
+    _session_store_set_active_item
+)
+
+SessionStore.mark_done = (
+    _session_store_mark_done
+)
+
+SessionStore.select_next_pending = (
+    _session_store_select_next_pending
+)
+
+SessionStore.increment_checkpoint = (
+    _session_store_increment_checkpoint
+)
+
+SessionStore.set_auto_checkpoint = (
+    _session_store_set_auto_checkpoint
+)
