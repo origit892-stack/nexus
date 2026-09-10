@@ -27,6 +27,11 @@ from .memory import MemoryStore
 from .tools import Tools
 from .runtime.tool_factory import build_registry
 from .tools.universal import UniversalTools, universal_schemas
+from nexus.runtime.fast_router import classify_task, route_source
+from nexus.runtime.speed_governor import SpeedGovernor, smart_mode_enabled
+from nexus.runtime.route_policy import evaluate_route_tool, fast_lookup_hard_stop, automatic_route_enforcement_enabled
+from nexus.runtime.understanding import understand_task, render_executor_brief, UnderstandingError, understanding_enabled
+from nexus.runtime.planner import plan_task, render_plan_brief, PlanningError
 
 
 console = Console()
@@ -207,6 +212,69 @@ def extract_text(
 
 
 class Agent:
+
+    def _configure_speed_governor(
+        self,
+        instruction: str,
+    ):
+        route = classify_task(
+            instruction
+        )
+
+        self._speed_route = route
+
+        self._speed_governor = SpeedGovernor(
+            discovery_budget=(
+                route.discovery_budget
+            ),
+            action_required_iteration=(
+                route.action_iteration
+            ),
+        )
+
+        return route
+
+    def _speed_prompt(
+        self,
+    ) -> str:
+        route = getattr(
+            self,
+            "_speed_route",
+            None,
+        )
+
+        if route is None:
+            return ""
+
+        return (
+            "\n\nNEXUS SPEED CONTRACT:\n"
+            f"- route: {route.name}\n"
+            f"- discovery budget: "
+            f"{route.discovery_budget}\n"
+            f"- concrete action required by "
+            f"iteration: {route.action_iteration}\n"
+            "- reuse prior tool results; do not "
+            "repeat identical searches or reads\n"
+            "- stop discovery once sufficient "
+            "evidence exists\n"
+            "- prefer one focused batch of work "
+            "over iterative browsing\n"
+            "- when independent read-only calls are needed, "
+            "issue them together in the same model turn\n"
+            "- FAST_LOOKUP should gather enough direct evidence "
+            "before concluding; speed must not replace correctness\n"
+            "- do not use memory_add for ordinary lookup results "
+            "unless durable memory is explicitly required\n"
+            "- FAST_LOOKUP is strictly read-only: only list_files, "
+            "search_files, read_file, and memory_search are allowed\n"
+            "- FAST_LOOKUP must never use shell, process_start, "
+            "write_file, delegate_task, memory_add, package installs, "
+            "Blender, Open3D, or any mutation\n"
+            "- for FAST_LOOKUP, finish with the best supported answer "
+            "rather than escaping the route policy\n"
+        )
+
+
     def __init__(
         self,
         cfg,
@@ -491,10 +559,133 @@ class Agent:
             },
         ]
 
+    def _enforce_route_tool(
+        self,
+        *,
+        name,
+        arguments,
+    ):
+        if not automatic_route_enforcement_enabled():
+            return None
+
+        decision = evaluate_route_tool(
+            route_name=self._speed_route.name,
+            tool_name=name,
+            arguments=arguments,
+        )
+
+        if decision.allow:
+            return None
+
+        return {
+            "allow": False,
+            "reason": decision.reason,
+            "output": (
+                "NEXUS ROUTE POLICY BLOCK: "
+                + str(decision.reason)
+                + ". The active route is "
+                + str(self._speed_route.name)
+                + ". Do not attempt an alternate "
+                "tool to bypass this restriction."
+            ),
+        }
+
     def run(
         self,
         task,
     ):
+        speed_route = (
+            self._configure_speed_governor(
+                task
+            )
+        )
+
+        if understanding_enabled():
+            try:
+                self._understanding = understand_task(
+                    task,
+                    progress=(
+                        self.say
+                        if self.live
+                        else None
+                    ),
+                    run_critic=True,
+                )
+            except UnderstandingError as exc:
+                raise RuntimeError(
+                    "NEXUS_UNDERSTANDING_FAILED: "
+                    + str(exc)
+                ) from exc
+
+            self._understanding_prompt = (
+                render_executor_brief(
+                    self._understanding
+                )
+            )
+
+            try:
+                self._execution_plan = plan_task(
+                    user_request=task,
+                    understanding=(
+                        self._understanding
+                    ),
+                    progress=(
+                        self.say
+                        if self.live
+                        else None
+                    ),
+                )
+            except PlanningError as exc:
+                raise RuntimeError(
+                    "NEXUS_PLANNING_FAILED: "
+                    + str(exc)
+                ) from exc
+
+            self._execution_plan_prompt = (
+                render_plan_brief(
+                    self._execution_plan
+                )
+            )
+        else:
+            self._understanding = None
+            self._understanding_prompt = ""
+            self._execution_plan = None
+            self._execution_plan_prompt = ""
+
+        if self.live:
+            self.say(
+                "[cyan]NEXUS SPEED MODE:[/cyan] "
+                + (
+                    "SMART"
+                    if smart_mode_enabled()
+                    else "STRICT"
+                )
+            )
+
+            if automatic_route_enforcement_enabled():
+                self.say(
+                    "[cyan]NEXUS ROUTE:[/cyan] "
+                    + str(speed_route.name)
+                    + " | ROUTE_SOURCE="
+                    + route_source(task)
+                    + " | discovery_budget="
+                    + str(
+                        speed_route.discovery_budget
+                    )
+                )
+
+                if speed_route.name == "FAST_LOOKUP":
+                    self.say(
+                        "[cyan]CAPABILITIES:[/cyan] "
+                        "ALLOW="
+                        "list_files,search_files,"
+                        "read_file,memory_search"
+                        " | BLOCK="
+                        "shell,process_start,"
+                        "write_file,delegate_task,"
+                        "memory_add,unknown"
+                    )
+
         rid = self.store.new_run(
             self.role,
             task,
@@ -510,6 +701,9 @@ class Agent:
             "task": task,
             "status": "RUNNING",
             "iteration": 0,
+            "speed_route": (
+                speed_route.name
+            ),
         })
 
         evidence_ledger = EvidenceLedger()
@@ -574,6 +768,8 @@ class Agent:
             specialist_system_prompt(
                 self.role
             )
+            + self._understanding_prompt
+            + self._execution_plan_prompt
         )
 
         messages = [
@@ -718,6 +914,37 @@ class Agent:
                 )
 
                 if not calls:
+                    completion_allowed, completion_reason = (
+                        self._speed_governor.completion_allowed(
+                            route_name=self._speed_route.name
+                        )
+                    )
+
+                    if not completion_allowed:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "NEXUS COMPLETION GATE: "
+                                    + str(completion_reason)
+                                    + ". The FAST_LOOKUP does not yet "
+                                    "have enough direct evidence. "
+                                    "Continue focused read-only discovery. "
+                                    "Inspect specific targets supplied by "
+                                    "the user before finishing. Do not "
+                                    "broaden the task."
+                                ),
+                            }
+                        )
+
+                        if self.live:
+                            self.say(
+                                "[yellow]COMPLETION GATE[/yellow] "
+                                + str(completion_reason)
+                            )
+
+                        continue
+
                     final = (
                         guard_final_answer(
                             text
@@ -762,6 +989,11 @@ class Agent:
                         + "\nNEXUS_TIMING_SUMMARY="
                         + json.dumps(
                             timing_summary,
+                            ensure_ascii=False,
+                        )
+                        + "\nNEXUS_SPEED_SUMMARY="
+                        + json.dumps(
+                            self._speed_governor.report(),
                             ensure_ascii=False,
                         )
                     )
@@ -925,6 +1157,130 @@ class Agent:
                     except Exception:
                         args = {}
 
+                    route_block = (
+                        self._enforce_route_tool(
+                            name=name,
+                            arguments=args,
+                        )
+                    )
+
+                    if route_block is not None:
+                        output = route_block[
+                            "output"
+                        ]
+
+                        self.store.event(
+                            rid,
+                            "route_policy",
+                            {
+                                "name": name,
+                                "args": args,
+                                "iteration": iteration,
+                                "decision": "BLOCKED",
+                                "reason": (
+                                    route_block[
+                                        "reason"
+                                    ]
+                                ),
+                            },
+                        )
+
+                        evidence_ledger.record(
+                            name,
+                            args,
+                            output,
+                        )
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": (
+                                    call.id
+                                ),
+                                "content": output,
+                            }
+                        )
+
+                        if self.live:
+                            self.say(
+                                "[red]ROUTE BLOCK[/red] "
+                                + str(
+                                    route_block[
+                                        "reason"
+                                    ]
+                                )
+                            )
+
+                        continue
+
+                    speed_decision = (
+                        self._speed_governor
+                        .before_tool(
+                            iteration=iteration,
+                            name=name,
+                            arguments=args,
+                        )
+                    )
+
+                    if not speed_decision[
+                        "allow"
+                    ]:
+                        output = (
+                            self._speed_governor
+                            .guidance(
+                                speed_decision[
+                                    "reason"
+                                ]
+                            )
+                        )
+
+                        self.store.event(
+                            rid,
+                            "speed_governor",
+                            {
+                                "name": name,
+                                "args": args,
+                                "iteration": (
+                                    iteration
+                                ),
+                                "decision": (
+                                    "SUPPRESSED"
+                                ),
+                                "reason": (
+                                    speed_decision[
+                                        "reason"
+                                    ]
+                                ),
+                            },
+                        )
+
+                        evidence_ledger.record(
+                            name,
+                            args,
+                            output,
+                        )
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": (
+                                    call.id
+                                ),
+                                "content": output,
+                            }
+                        )
+
+                        if self.live:
+                            self.say(
+                                "[cyan]"
+                                "SPEED GOVERNOR"
+                                "[/cyan] "
+                                f"{name} "
+                                f"{speed_decision['reason']}"
+                            )
+
+                        continue
+
                     self.say(
                         f"[yellow]TOOL[/yellow] "
                         f"{self.role}:{name} "
@@ -975,6 +1331,12 @@ class Agent:
                                 if cached_output is not None:
                                     output = cached_output
 
+                                    self._speed_governor.record_tool_timing(
+                                        name=name,
+                                        duration=0.0,
+                                        cached=True,
+                                    )
+
                                     if self.live:
                                         self.say(
                                             f"[dim]TOOL CACHE HIT "
@@ -989,14 +1351,27 @@ class Agent:
                                         args,
                                     )
 
+                                    tool_finished = (
+                                        time.time()
+                                    )
+
                                     self.timing_ledger.record(
                                         "tool",
                                         name,
                                         tool_started,
-                                        time.time(),
+                                        tool_finished,
                                         {
                                             "role": self.role,
                                         },
+                                    )
+
+                                    self._speed_governor.record_tool_timing(
+                                        name=name,
+                                        duration=(
+                                            tool_finished
+                                            - tool_started
+                                        ),
+                                        cached=False,
                                     )
 
                                     self.tool_cache.put(
@@ -1007,6 +1382,14 @@ class Agent:
 
                             except PermissionError as e:
                                 output = str(e)
+
+                    self._speed_governor.record_discovery_success(
+                        tool_name=name
+                    )
+
+                    self._speed_governor.record_progress(
+                        name
+                    )
 
                     evidence_ledger.record(
                         name,

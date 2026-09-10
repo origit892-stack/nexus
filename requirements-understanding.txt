@@ -1,0 +1,5 @@
+# Nexus local Understanding Layer.
+# Verified against the currently installed MLX API.
+mlx==0.32.2
+mlx-lm==0.31.3
+huggingface_hub[hf_xet]==1.31.0

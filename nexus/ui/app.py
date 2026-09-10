@@ -38,9 +38,39 @@ from nexus.sessions.runner import (
     continue_session,
 )
 from nexus.sessions.agent_shell import run_agent_shell
+from nexus import __version__
+from textual.containers import VerticalScroll
 
 
 CSS = """
+
+SessionDetailScreen .modal {
+    width: 92%;
+    max-width: 120;
+    height: 90%;
+    max-height: 38;
+}
+
+#session-history-scroll {
+    height: 1fr;
+    min-height: 6;
+    overflow-y: auto;
+}
+
+#session-history {
+    height: auto;
+}
+
+#continue-instruction {
+    height: 3;
+    min-height: 3;
+}
+
+#session-actions {
+    height: 3;
+    min-height: 3;
+}
+
 Screen {
     background: #080b10;
     color: #edf4ff;
@@ -478,6 +508,21 @@ class NewSessionScreen(
 class SessionDetailScreen(
     ModalScreen,
 ):
+    BINDINGS = [
+        (
+            "escape",
+            "close_session",
+            "Back",
+        ),
+    ]
+
+    def action_close_session(
+        self,
+    ) -> None:
+        self.dismiss(
+            None
+        )
+
     def __init__(
         self,
         session,
@@ -519,12 +564,15 @@ class SessionDetailScreen(
                 f"Session: {self.session.id}"
             )
 
-            yield Markdown(
-                "\n\n".join(
-                    history_text
-                ),
-                id="session-history",
-            )
+            with VerticalScroll(
+                id="session-history-scroll"
+            ):
+                yield Markdown(
+                    "\n\n".join(
+                        history_text
+                    ),
+                    id="session-history",
+                )
 
             yield Input(
                 placeholder=(
@@ -533,7 +581,9 @@ class SessionDetailScreen(
                 id="continue-instruction",
             )
 
-            with Horizontal():
+            with Horizontal(
+                id="session-actions"
+            ):
                 yield Button(
                     "Open Agent Shell",
                     id="open-agent-shell",
@@ -544,6 +594,12 @@ class SessionDetailScreen(
                     "Continue Session",
                     id="continue-session",
                     classes="success",
+                )
+
+                yield Button(
+                    "Complete",
+                    id="complete-session",
+                    classes="warning",
                 )
 
                 yield Button(
@@ -587,6 +643,19 @@ class SessionDetailScreen(
             {
                 "action": "continue",
                 "instruction": instruction,
+            }
+        )
+
+    @on(
+        Button.Pressed,
+        "#complete-session",
+    )
+    def complete_pressed(
+        self,
+    ):
+        self.dismiss(
+            {
+                "action": "complete",
             }
         )
 
@@ -740,7 +809,7 @@ class NexusApp(
             ):
                 yield Static(
                     "◆ NEXUS\n"
-                    "[dim]AGENT OS / 1.6[/dim]",
+                    f"[dim]AGENT OS / {__version__}[/dim]",
                     classes="brand",
                 )
 
@@ -1132,6 +1201,17 @@ class NexusApp(
         action = result.get(
             "action"
         )
+
+        if action == "complete":
+            session.status = "COMPLETED"
+            store.save(
+                session
+            )
+
+            self.notify(
+                "Session marked complete."
+            )
+            return
 
         if action == "open_shell":
             self.exit(

@@ -197,7 +197,7 @@ def run_session(
             result
         )
 
-        session.status = "COMPLETED"
+        session.status = "READY"
 
         session.last_result = str(
             result
@@ -218,7 +218,7 @@ def run_session(
 
         _update_resume_state(
             session,
-            status="COMPLETED",
+            status="READY",
             instruction=session.objective,
             run_id=run_id,
             interrupted=False,
@@ -415,7 +415,7 @@ def continue_session(
                 f"{type(exc).__name__}: {exc}"
             )
 
-        session.status = "COMPLETED"
+        session.status = "READY"
 
         session.last_result = visible_result_text
 
@@ -432,7 +432,7 @@ def continue_session(
 
         _update_resume_state(
             session,
-            status="COMPLETED",
+            status="READY",
             instruction=instruction,
             run_id=run_id,
             interrupted=False,

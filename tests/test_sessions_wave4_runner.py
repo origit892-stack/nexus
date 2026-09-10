@@ -131,7 +131,7 @@ NEXUS_STATE_UPDATE_END'''
     result = runner.continue_session(tmp_path, session.id, "work")
     loaded = store.get(session.id)
 
-    assert loaded.status == "COMPLETED"
+    assert loaded.status == "READY"
     assert str(result) == text
     assert any(
         entry.get("type") == "state_update_rejected"

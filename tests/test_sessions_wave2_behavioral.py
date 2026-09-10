@@ -432,7 +432,7 @@ def test_success_resume_state(
 
     assert (
         loaded.status
-        == "COMPLETED"
+        == "READY"
     )
 
     assert (
@@ -453,7 +453,7 @@ def test_success_resume_state(
         loaded.resume_state[
             "last_status"
         ]
-        == "COMPLETED"
+        == "READY"
     )
 
     assert (

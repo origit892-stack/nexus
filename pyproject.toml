@@ -22,7 +22,10 @@ dependencies = [
   "playwright",
   "Pillow>=10",
   "textual>=1.0",
-  "prompt-toolkit>=3.0,<4"
+  "prompt-toolkit>=3.0,<4",
+  "mlx==0.32.2",
+  "mlx-lm==0.31.3",
+  "huggingface_hub[hf_xet]==1.31.0"
 ]
 
 [project.scripts]
@@ -33,4 +36,4 @@ where = ["."]
 include = ["nexus*"]
 
 [tool.setuptools.package-data]
-nexus = ["defaults/*.yaml"]
+nexus = ["defaults/*.yaml", "config/*.json", "config/*.md"]
