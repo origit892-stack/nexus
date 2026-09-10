@@ -1910,6 +1910,77 @@ def auto(
         raise typer.Exit(1)
 
 
+
+@app.command("upgrade")
+def nexus_upgrade():
+    """
+    Upgrade Nexus using the installation owner and verify
+    that the PATH-resolved `nexus` command actually runs
+    the upgraded version.
+    """
+    from nexus.runtime.launcher_upgrade import (
+        LauncherUpgradeError,
+        upgrade_nexus,
+    )
+
+    try:
+        result = upgrade_nexus()
+
+    except LauncherUpgradeError as exc:
+        typer.echo(
+            "NEXUS_UPGRADE=FAIL",
+            err=True,
+        )
+        typer.echo(
+            "REASON="
+            + str(exc),
+            err=True,
+        )
+        raise typer.Exit(
+            code=1
+        ) from exc
+
+    typer.echo(
+        "NEXUS_UPGRADE=PASS"
+    )
+    typer.echo(
+        "UPGRADE_METHOD="
+        + result.method
+    )
+    typer.echo(
+        "VERSION="
+        + result.version
+    )
+    typer.echo(
+        "EXPECTED_LAUNCHER="
+        + str(
+            result.expected_launcher
+        )
+    )
+    typer.echo(
+        "ACTIVE_LAUNCHER="
+        + str(
+            result.active_launcher
+        )
+    )
+    typer.echo(
+        "LAUNCHER_REPAIRED="
+        + (
+            "YES"
+            if result.launcher_repaired
+            else "NO"
+        )
+    )
+
+    if result.backup is not None:
+        typer.echo(
+            "LAUNCHER_BACKUP="
+            + str(
+                result.backup
+            )
+        )
+
+
 def main():
     """
     Nexus executable entrypoint.
