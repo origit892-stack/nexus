@@ -877,6 +877,52 @@ def _run_milestone_state_machine(
 
             raise
 
+        returned_failure = (
+            _milestone_result_failure(
+                result
+            )
+        )
+
+        if returned_failure is not None:
+            state = mark_current_fail(
+                state,
+                result=returned_failure,
+                evidence=[
+                    {
+                        "type":
+                            "agent_reported_failure",
+                        "milestone_id":
+                            item["id"],
+                    }
+                ],
+            )
+
+            store.update_working_state(
+                session_id,
+                milestone_state=state,
+                blockers=[
+                    (
+                        str(item["id"])
+                        + " failed: "
+                        + returned_failure
+                    )
+                ],
+            )
+
+            if progress is not None:
+                progress(
+                    "MILESTONE "
+                    + str(item["id"])
+                    + ": FAIL"
+                )
+
+            raise RuntimeError(
+                "MILESTONE_AGENT_REPORTED_FAILURE:"
+                + str(item["id"])
+                + ":"
+                + returned_failure
+            )
+
         state = mark_current_pass(
             state,
             result=result,
@@ -1034,65 +1080,219 @@ def _run_milestone_state_machine(
     return final_result
 
 
+def _milestone_result_failure(
+    result,
+):
+    """
+    Return a failure reason when an Agent returned a
+    transport-style failure as ordinary text.
+
+    Milestone orchestration must never convert an explicit
+    AGENT_EXCEPTION / failed completion gate into PASS merely
+    because Agent.run returned instead of raising.
+    """
+    text = str(
+        result or ""
+    ).strip()
+
+    failure_prefixes = (
+        "AGENT_EXCEPTION=",
+        "NEXUS_MILESTONE_UNDERSTANDING_FAILED:",
+        "NEXUS_UNDERSTANDING_FAILED:",
+        "NEXUS_PLANNING_FAILED:",
+    )
+
+    for prefix in failure_prefixes:
+        if text.startswith(prefix):
+            return text
+
+    return None
+
+
 def _milestone_capability_policy(
     plan,
     *,
     milestone_index=None,
 ) -> str:
     """
-    Resolve execution capability from the persisted
-    authoritative milestone contract.
+    Resolve capability from the persisted semantic contract.
 
-    READ_ONLY is sticky: if either the master restrictions
-    or the active milestone restrictions require read-only
-    behavior, the execution policy is READ_ONLY.
+    READ_ONLY is reserved for an execution unit that forbids
+    mutation generally. A prohibition against mutating a named
+    target, another project, or anything outside an allowed
+    scope is a mutation boundary, not READ_ONLY.
     """
 
-    texts = [
-        str(value)
-        for value in plan.global_restrictions
-    ]
-
-    if milestone_index is not None:
-        index = int(
-            milestone_index
+    def _normalized(value):
+        return " ".join(
+            str(value)
+            .strip()
+            .lower()
+            .replace("_", " ")
+            .replace("-", " ")
+            .split()
         )
 
-        if (
-            index < 0
-            or index >= len(
-                plan.milestones
+    def _is_explicit_read_only(value):
+        text = _normalized(value)
+
+        return any(
+            signal in text
+            for signal in (
+                "read only",
+                "without modification",
+                "without modifications",
+                "without modifying",
+                "no mutation",
+                "no mutations",
+            )
+        )
+
+    def _is_mutation_prohibition(value):
+        text = _normalized(value)
+
+        prefixes = (
+            "do not modify",
+            "do not mutate",
+            "must not modify",
+            "must not mutate",
+            "no modification",
+            "no modifications",
+        )
+
+        return next(
+            (
+                prefix
+                for prefix in prefixes
+                if prefix in text
+            ),
+            None,
+        )
+
+    def _is_scoped_prohibition(value):
+        text = _normalized(value)
+
+        prefix = _is_mutation_prohibition(
+            text
+        )
+
+        if prefix is None:
+            return False
+
+        # Explicit location/scope boundaries.
+        if any(
+            signal in (" " + text + " ")
+            for signal in (
+                " outside ",
+                " except ",
+                " except for ",
+                " other than ",
+                " beyond ",
+                " only inside ",
+                " only within ",
             )
         ):
-            raise IndexError(
-                "MILESTONE_INDEX_OUT_OF_RANGE"
-            )
+            return True
 
-        texts.extend(
-            str(value)
-            for value in plan.milestones[
-                index
-            ].restrictions
+        # For "no modification(s) to X", X is an explicit
+        # protected target. This constrains mutation scope.
+        for marker in (
+            "no modification to ",
+            "no modifications to ",
+        ):
+            if text.startswith(marker):
+                target = text[
+                    len(marker):
+                ].strip()
+
+                if target:
+                    return True
+
+        # For imperative prohibitions, anything following the
+        # verb that names a target is scoped unless it is the
+        # generic execution object itself.
+        for marker in (
+            "do not modify ",
+            "do not mutate ",
+            "must not modify ",
+            "must not mutate ",
+        ):
+            if text.startswith(marker):
+                target = text[
+                    len(marker):
+                ].strip()
+
+                generic_targets = {
+                    "anything",
+                    "any files",
+                    "files",
+                    "the files",
+                    "the project",
+                    "the workspace",
+                    "workspace",
+                    "source",
+                    "the source",
+                }
+
+                if (
+                    target
+                    and target
+                    not in generic_targets
+                ):
+                    return True
+
+        return False
+
+    def _is_absolute_read_only(value):
+        text = _normalized(value)
+
+        if not text:
+            return False
+
+        if _is_explicit_read_only(text):
+            return True
+
+        if (
+            _is_mutation_prohibition(text)
+            is None
+        ):
+            return False
+
+        if _is_scoped_prohibition(text):
+            return False
+
+        return True
+
+    for value in plan.global_restrictions:
+        if _is_absolute_read_only(value):
+            return "READ_ONLY"
+
+    if milestone_index is None:
+        return "NORMAL"
+
+    index = int(milestone_index)
+
+    if (
+        index < 0
+        or index >= len(plan.milestones)
+    ):
+        raise IndexError(
+            "MILESTONE_INDEX_OUT_OF_RANGE"
         )
 
-    joined = "\n".join(
-        texts
-    ).lower()
+    milestone = plan.milestones[index]
 
-    read_only_signals = (
-        "read_only",
-        "read-only",
-        "read only",
-        "do not modify",
-        "do not mutate",
-        "no mutation",
-        "without modification",
-        "without modifying",
-    )
+    local_values = [
+        milestone.title,
+        milestone.objective,
+        *milestone.requirements,
+        *milestone.restrictions,
+        *milestone.completion_definition,
+    ]
 
     if any(
-        signal in joined
-        for signal in read_only_signals
+        _is_absolute_read_only(value)
+        for value in local_values
     ):
         return "READ_ONLY"
 

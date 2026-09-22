@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 
 import asyncio
 from pathlib import Path
@@ -30,6 +31,8 @@ from textual.widgets import (
 
 from nexus.projects.registry import (
     ProjectRegistry,
+    Project,
+    utc_now,
 )
 from nexus.sessions.store import (
     SessionStore,
@@ -784,14 +787,13 @@ class NexusApp(
         self,
     ):
         super().__init__()
-
         self.registry = (
             ProjectRegistry()
         )
-
         self.active_project = (
             self.registry.active()
         )
+        self.initial_project_path = None
 
     def compose(
         self,
@@ -883,14 +885,68 @@ class NexusApp(
         self,
     ):
         self.refresh_projects()
+        self._apply_initial_project_path()
         self.refresh_main()
-
         self.query_one(
             "#ui-ready-marker",
             Static,
         ).update(
             "UI_MOUNT_COMPLETE"
         )
+
+    def _apply_initial_project_path(
+        self,
+    ):
+        value = self.initial_project_path
+
+        if not value:
+            return
+
+        requested = (
+            Path(value)
+            .expanduser()
+            .resolve()
+        )
+
+        if (
+            not requested.exists()
+            or not requested.is_dir()
+        ):
+            raise RuntimeError(
+                "NEXUS_LAUNCH_DIRECTORY_INVALID:"
+                + str(requested)
+            )
+
+        for project in self.registry.list():
+            candidate = (
+                Path(project.path)
+                .expanduser()
+                .resolve()
+            )
+
+            if candidate == requested:
+                self.active_project = project
+                self.initial_project_path = None
+                return
+
+        digest = hashlib.sha256(
+            str(requested).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:12]
+
+        self.active_project = Project(
+            id=(
+                "launch-"
+                + digest
+            ),
+            name=requested.name,
+            path=str(requested),
+            created_at=utc_now(),
+            last_opened_at=utc_now(),
+        )
+
+        self.initial_project_path = None
 
     def refresh_projects(
         self,
@@ -1262,17 +1318,28 @@ class NexusApp(
         pass
 
 
-def launch_home():
+def launch_home(
+    initial_project_path=None,
+):
     """
     Nexus application loop.
 
     The Textual UI selects a project/session. Session work runs
-    in the persistent Agent Shell. Escape from the Agent Shell
-    returns here and immediately reopens the Nexus UI.
+    in the persistent Agent Shell. Returning from the Agent
+    Shell reopens the UI in the same project that launched the
+    shell. This continuity is process-local and does not mutate
+    ProjectRegistry.
     """
-
     while True:
         app = NexusApp()
+
+        if initial_project_path:
+            app.initial_project_path = str(
+                Path(initial_project_path)
+                .expanduser()
+                .resolve()
+            )
+
         result = app.run()
 
         if not isinstance(
@@ -1305,6 +1372,16 @@ def launch_home():
                 "NEXUS_SESSION_LAUNCH_INVALID"
             )
             continue
+
+        # The project explicitly selected by the user becomes
+        # the launch hint for the next UI iteration. This keeps
+        # a transient/unregistered workspace stable after the
+        # Agent Shell exits without persisting registry state.
+        initial_project_path = str(
+            Path(project_path)
+            .expanduser()
+            .resolve()
+        )
 
         if action == "run_session":
             run_agent_shell(

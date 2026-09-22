@@ -854,6 +854,70 @@ def _show_context(
     print()
 
 
+def _should_resume_turn_checklist(
+    session,
+) -> bool:
+    """
+    Persisted milestone state is authoritative for checklist
+    resumption. Top-level session.status is presentation state
+    and must not suppress unfinished milestone/final work.
+    """
+    from nexus.sessions.milestone_state import (
+        normalize_milestone_state,
+    )
+
+    working = (
+        session.working_state
+        or {}
+    )
+
+    raw_state = working.get(
+        "milestone_state"
+    )
+
+    if not raw_state:
+        return False
+
+    state = normalize_milestone_state(
+        raw_state
+    )
+
+    if not state.get(
+        "active",
+        False,
+    ):
+        return False
+
+    final = (
+        state.get(
+            "final_verification"
+        )
+        or {}
+    )
+
+    final_status = str(
+        final.get(
+            "status",
+            "PENDING",
+        )
+    ).upper()
+
+    master_status = str(
+        state.get(
+            "master_status",
+            "PENDING",
+        )
+    ).upper()
+
+    if (
+        final_status == "PASS"
+        or master_status == "PASS"
+    ):
+        return False
+
+    return True
+
+
 def run_agent_shell(
     project_path,
     session_id,
@@ -902,13 +966,26 @@ def run_agent_shell(
         session_id,
     )
 
-    # NEXUS700_AGENT_SHELL_TURN_CHECKLIST_ROUTE_V1
-    if initial_run:
+    # NEXUS700_AGENT_SHELL_TURN_CHECKLIST_ROUTE_V2
+    #
+    # A new checklist session and a persisted unfinished
+    # checklist use the same state-machine entry point.
+    # Persisted milestone_state, not top-level session.status,
+    # is authoritative for automatic resume.
+    _resume_turn_checklist = (
+        initial_run
+        or _should_resume_turn_checklist(
+            session
+        )
+    )
+
+    if _resume_turn_checklist:
         _turn_result = _run_turn_checklist_session(
             project_path,
             session_id,
             progress=print,
         )
+
         if _turn_result is not None:
             return _turn_result
     if initial_run:

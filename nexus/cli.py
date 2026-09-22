@@ -81,7 +81,11 @@ def nexus_home(
         ctx.invoked_subcommand
         is None
     ):
-        launch_home()
+        launch_home(
+            initial_project_path=str(
+                Path.cwd().resolve()
+            ),
+        )
 
 
 
@@ -2027,7 +2031,11 @@ def main():
         prepare_terminal()
         # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
         from .ui.app import launch_home
-        return launch_home()
+        return launch_home(
+            initial_project_path=str(
+                Path.cwd().resolve()
+            ),
+        )
 
     if args in (
         ["--version"],

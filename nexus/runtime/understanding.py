@@ -788,10 +788,6 @@ def normalize_understanding_structure(
 
     This function does not infer user intent and does not
     invent missing semantic content.
-
-    A model may express a one-item list field as a string.
-    Convert that representation to a one-item list so that
-    structurally equivalent answers validate consistently.
     """
     result = dict(
         payload
@@ -801,19 +797,48 @@ def normalize_understanding_structure(
         if field not in result:
             continue
 
-        value = result[
-            field
-        ]
+        value = result[field]
 
         if isinstance(
             value,
             str,
         ):
-            result[
-                field
-            ] = [
+            result[field] = [
                 value
             ]
+
+    if (
+        "mutation_policy"
+        in result
+        and isinstance(
+            result["mutation_policy"],
+            str,
+        )
+    ):
+        policy = (
+            result["mutation_policy"]
+            .strip()
+            .upper()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
+
+        aliases = {
+            "READONLY": "READ_ONLY",
+            "READ_ONLY": "READ_ONLY",
+            "MUTATING": "MUTATING",
+            "MUTATION": "MUTATING",
+            "WRITE": "MUTATING",
+            "WRITING": "MUTATING",
+            "UNSURE": "UNSURE",
+            "UNKNOWN": "UNSURE",
+            "UNCERTAIN": "UNSURE",
+        }
+
+        if policy in aliases:
+            result[
+                "mutation_policy"
+            ] = aliases[policy]
 
     return result
 
@@ -1338,6 +1363,29 @@ def _finalizer_system_prompt() -> str:
     )
 
 
+def _complete_finalizer_empty_lists(
+    payload,
+):
+    """
+    Finalizer-only recovery for omitted list-valued fields.
+
+    This is deliberately not part of the general structural
+    normalizer. Ordinary normalization must remain lossless.
+    After model repair/finalization is exhausted, omission of a
+    list-valued field has the conservative representation [].
+    No scalar semantic field is synthesized here.
+    """
+    result = dict(
+        payload
+    )
+
+    for field in LIST_FIELDS:
+        if field not in result:
+            result[field] = []
+
+    return result
+
+
 def _finalize_understanding_payload(
     *,
     model: Any,
@@ -1453,6 +1501,29 @@ def _finalize_understanding_payload(
                 + "\n\nERROR:\n"
                 + last_error
             )
+
+    # Model-driven finalization is exhausted. Before failing,
+    # apply the one deterministic recovery that cannot invent
+    # positive semantic content: omitted list fields become [].
+    payload = _complete_finalizer_empty_lists(
+        payload
+    )
+
+    final_errors = validate_understanding(
+        payload
+    )
+
+    if not final_errors:
+        if progress is not None:
+            progress(
+                "UNDERSTANDING: "
+                "FINALIZER EMPTY-LIST RECOVERY"
+            )
+
+        return (
+            payload,
+            all_metrics,
+        )
 
     raise UnderstandingError(
         "Understanding finalizer failed: "
@@ -1882,42 +1953,87 @@ def understand_task(
             metrics["critic_guided_correction"] = (
                 correction_metrics
             )
-            payload = extract_json_object(
-                corrected_raw
-            )
-            payload = normalize_understanding_structure(
-                payload
-            )
-            correction_errors = validate_understanding(
-                payload
-            )
-            if correction_errors:
-                raise UnderstandingError(
-                    "Critic-guided Understanding correction failed: "
-                    + "; ".join(correction_errors)
+            # Critic correction is advisory hardening. A
+            # malformed or rejected correction must not destroy
+            # the already-valid Understanding payload produced
+            # by the primary repair/finalizer pipeline.
+            original_payload = payload
+
+            try:
+                corrected_payload = extract_json_object(
+                    corrected_raw
                 )
-            if progress is not None:
-                progress(
-                    "UNDERSTANDING: "
-                    "INDEPENDENT CRITIC RECHECK"
-                )
-            critic = critique_understanding(
-                user_request=instruction,
-                payload=payload,
-                project_path=project_path,
-            )
-            payload[
-                "_nexus_understanding_critic"
-            ] = critic
-            if critic.get("verdict") != "PASS":
-                raise UnderstandingError(
-                    "Understanding critic rejected "
-                    "the corrected interpretation: "
-                    + json.dumps(
-                        critic,
-                        ensure_ascii=False,
+                corrected_payload = (
+                    normalize_understanding_structure(
+                        corrected_payload
                     )
                 )
+                correction_errors = (
+                    validate_understanding(
+                        corrected_payload
+                    )
+                )
+
+                if correction_errors:
+                    raise UnderstandingError(
+                        "Critic-guided Understanding "
+                        "correction failed: "
+                        + "; ".join(
+                            correction_errors
+                        )
+                    )
+
+                if progress is not None:
+                    progress(
+                        "UNDERSTANDING: "
+                        "INDEPENDENT CRITIC RECHECK"
+                    )
+
+                corrected_critic = (
+                    critique_understanding(
+                        user_request=instruction,
+                        payload=corrected_payload,
+                        project_path=project_path,
+                    )
+                )
+
+                corrected_payload[
+                    "_nexus_understanding_critic"
+                ] = corrected_critic
+
+                if (
+                    corrected_critic.get(
+                        "verdict"
+                    )
+                    != "PASS"
+                ):
+                    raise UnderstandingError(
+                        "Understanding critic rejected "
+                        "the corrected interpretation: "
+                        + json.dumps(
+                            corrected_critic,
+                            ensure_ascii=False,
+                        )
+                    )
+
+                payload = corrected_payload
+
+            except UnderstandingError as exc:
+                payload = original_payload
+                payload[
+                    "_nexus_understanding_critic"
+                ] = critic
+                payload[
+                    "_nexus_understanding_meta"
+                ][
+                    "critic_correction_fallback"
+                ] = str(exc)
+
+                if progress is not None:
+                    progress(
+                        "UNDERSTANDING: "
+                        "CRITIC CORRECTION FALLBACK"
+                    )
 
     if progress is not None:
         progress(
