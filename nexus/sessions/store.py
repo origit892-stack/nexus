@@ -119,6 +119,14 @@ def _normalize_working_state(
                 True,
             )
         ),
+        "milestone_state": (
+            __import__(
+                "nexus.sessions.milestone_state",
+                fromlist=["normalize_milestone_state"],
+            ).normalize_milestone_state(
+                value.get("milestone_state")
+            )
+        ),
         "updated_at": value.get(
             "updated_at"
         ),

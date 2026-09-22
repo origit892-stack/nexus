@@ -7,7 +7,18 @@ from typing import Any, Callable
 import json
 import time
 
+# NEXUS700_MILESTONE_COMPILER_RUNTIME_V1
+from nexus.runtime.prompt_milestones import (
+    milestone_compiler_messages,
+    milestone_plan_from_payload,
+    normalize_milestone_payload,
+    validate_milestone_plan,
+    milestone_repair_messages,
+)
 
+
+
+# NEXUS700_UNDERSTANDING_REQUIRED_FIELD_NORMALIZATION
 class UnderstandingError(
     RuntimeError
 ):
@@ -347,6 +358,21 @@ def _system_prompt(
         "7. speed only after correctness\n\n"
         "Never invent project content that is absent "
         "from the user's request and project context.\n\n"
+        # NEXUS700_REQUEST_FIDELITY_V2
+        "Interpret the USER REQUEST itself, not the generic purpose "
+        "of this Understanding Model. Never replace the user's goal "
+        "with phrases such as understand the intent, analyze context, "
+        "produce a JSON form, or help the user unless the user actually "
+        "requested those things.\n\n"
+        "For simple or literal requests, preserve their simplicity. "
+        "If the user asks to reply with an exact value, the user_goal, "
+        "desired_end_state, explicit_requests, recommended_plan, "
+        "completion_definition, and response_expected must describe "
+        "that exact requested response and must not introduce extra "
+        "analysis, project work, context inspection, or planning.\n\n"
+        "recommended_plan means the minimal faithful execution plan "
+        "for the USER REQUEST. completion_definition means observable "
+        "conditions proving the USER REQUEST itself is complete.\n\n"
         "A future desired action is NOT automatically "
         "authorized in the current phase.\n\n"
         "If mutation permission cannot be determined "
@@ -1224,6 +1250,69 @@ def critique_understanding(
 
 
 
+
+# NEXUS700_CRITIC_GUIDED_UNDERSTANDING_CORRECTION
+def _critic_guided_understanding_messages(
+    *,
+    user_request: str,
+    payload: dict[str, Any],
+    critic: dict[str, Any],
+    context_pack: str,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                _system_prompt(
+                    context_pack
+                )
+                + "\n\n"
+                + "CRITIC-GUIDED CORRECTION MODE.\n"
+                + "The previous structured understanding was "
+                + "semantically rejected by an independent critic.\n"
+                + "Correct the understanding itself.\n"
+                + "The USER REQUEST is authoritative.\n"
+                + "Use the critic only to identify mistakes in the "
+                + "previous interpretation.\n"
+                + "Do not defend the previous interpretation.\n"
+                + "Do not execute the task.\n"
+                + "Do not invent project facts.\n"
+                + "Do not add work that the user did not request.\n"
+                + "Preserve simple requests as simple requests.\n"
+                + "Return exactly one complete JSON object containing "
+                + "all fields in the Understanding schema."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "ORIGINAL USER REQUEST:\n"
+                + user_request
+                + "\n\n"
+                + "REJECTED UNDERSTANDING:\n"
+                + json.dumps(
+                    _clean_payload(
+                        payload
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n\n"
+                + "INDEPENDENT CRITIC RESULT:\n"
+                + json.dumps(
+                    _clean_payload(
+                        critic
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n\n"
+                + "Produce a corrected Understanding form now."
+            ),
+        },
+    ]
+
+
 def _finalizer_system_prompt() -> str:
     return (
         "You are the Nexus Understanding Form Finalizer.\n\n"
@@ -1369,6 +1458,139 @@ def _finalize_understanding_payload(
         "Understanding finalizer failed: "
         + last_error
     )
+
+
+
+# NEXUS700_COMPILE_MASTER_PROMPT_V1
+def compile_master_prompt(
+    prompt: str,
+    *,
+    progress=None,
+):
+    cfg = load_understanding_config()
+
+    model, tokenizer, load_seconds = (
+        _load_model_cached(
+            str(
+                cfg["local_path"]
+            )
+        )
+    )
+
+    if progress is not None:
+        progress(
+            "MILESTONE COMPILER: REASONING"
+        )
+
+    raw, metrics = _generate(
+        model=model,
+        tokenizer=tokenizer,
+        messages=(
+            milestone_compiler_messages(
+                prompt=prompt,
+            )
+        ),
+        max_tokens=max(
+            int(
+                cfg[
+                    "repair_max_tokens"
+                ]
+            ),
+            4096,
+        ),
+        temperature=0.0,
+        top_p=0.0,
+    )
+
+    payload = extract_json_object(
+        raw
+    )
+
+    payload = (
+        normalize_milestone_payload(
+            payload
+        )
+    )
+
+    errors = validate_milestone_plan(
+        prompt=prompt,
+        payload=payload,
+    )
+
+    repairs = 0
+
+    while errors:
+        if repairs >= 2:
+            raise ValueError(
+                "INVALID_MILESTONE_PLAN_AFTER_REPAIRS: "
+                + "; ".join(errors)
+            )
+
+        repairs += 1
+
+        if progress is not None:
+            progress(
+                "MILESTONE COMPILER: "
+                f"SCHEMA REPAIR {repairs}"
+            )
+
+        repaired_raw, repair_metrics = (
+            _generate(
+                model=model,
+                tokenizer=tokenizer,
+                messages=(
+                    milestone_repair_messages(
+                        prompt=prompt,
+                        payload=payload,
+                        errors=errors,
+                    )
+                ),
+                max_tokens=max(
+                    int(
+                        cfg[
+                            "repair_max_tokens"
+                        ]
+                    ),
+                    4096,
+                ),
+                temperature=0.0,
+                top_p=0.0,
+            )
+        )
+
+        metrics[
+            f"milestone_repair_{repairs}"
+        ] = repair_metrics
+
+        payload = extract_json_object(
+            repaired_raw
+        )
+
+        payload = (
+            normalize_milestone_payload(
+                payload
+            )
+        )
+
+        errors = validate_milestone_plan(
+            prompt=prompt,
+            payload=payload,
+        )
+
+    plan = milestone_plan_from_payload(
+        prompt=prompt,
+        payload=payload,
+    )
+
+    metrics["model_load_seconds"] = (
+        load_seconds
+    )
+
+    metrics["repairs_used"] = repairs
+
+    return plan, metrics
+
+
 
 
 def understand_task(
@@ -1622,34 +1844,80 @@ def understand_task(
                 f"{label} -> {short_value}"
             )
 
+    # NEXUS700_CRITIC_CORRECTION_PASS_V1
+    # NEXUS700_CRITIC_FLOW_V3
     if run_critic:
         if progress is not None:
             progress(
                 "UNDERSTANDING: "
                 "INDEPENDENT CRITIC"
             )
-
         critic = critique_understanding(
             user_request=instruction,
             payload=payload,
             project_path=project_path,
         )
-
         payload[
             "_nexus_understanding_critic"
         ] = critic
-
-        if critic[
-            "verdict"
-        ] != "PASS":
-            raise UnderstandingError(
-                "Understanding critic rejected "
-                "the interpretation: "
-                + json.dumps(
-                    critic,
-                    ensure_ascii=False,
+        if critic.get("verdict") != "PASS":
+            if progress is not None:
+                progress(
+                    "UNDERSTANDING: "
+                    "CRITIC-GUIDED CORRECTION"
                 )
+            corrected_raw, correction_metrics = _generate(
+                model=model,
+                tokenizer=tokenizer,
+                messages=_critic_guided_understanding_messages(
+                    user_request=instruction,
+                    payload=payload,
+                    critic=critic,
+                    context_pack=context,
+                ),
+                max_tokens=int(cfg["repair_max_tokens"]),
+                temperature=0.0,
+                top_p=0.0,
             )
+            metrics["critic_guided_correction"] = (
+                correction_metrics
+            )
+            payload = extract_json_object(
+                corrected_raw
+            )
+            payload = normalize_understanding_structure(
+                payload
+            )
+            correction_errors = validate_understanding(
+                payload
+            )
+            if correction_errors:
+                raise UnderstandingError(
+                    "Critic-guided Understanding correction failed: "
+                    + "; ".join(correction_errors)
+                )
+            if progress is not None:
+                progress(
+                    "UNDERSTANDING: "
+                    "INDEPENDENT CRITIC RECHECK"
+                )
+            critic = critique_understanding(
+                user_request=instruction,
+                payload=payload,
+                project_path=project_path,
+            )
+            payload[
+                "_nexus_understanding_critic"
+            ] = critic
+            if critic.get("verdict") != "PASS":
+                raise UnderstandingError(
+                    "Understanding critic rejected "
+                    "the corrected interpretation: "
+                    + json.dumps(
+                        critic,
+                        ensure_ascii=False,
+                    )
+                )
 
     if progress is not None:
         progress(

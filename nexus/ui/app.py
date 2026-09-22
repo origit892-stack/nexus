@@ -25,6 +25,7 @@ from textual.widgets import (
     ListView,
     Markdown,
     Static,
+    TextArea,
 )
 
 from nexus.projects.registry import (
@@ -432,10 +433,8 @@ class NewSessionScreen(
                 classes="modal-title",
             )
 
-            yield Input(
-                placeholder=(
-                    "What should Nexus do?"
-                ),
+            yield TextArea(
+                "",
                 id="objective",
             )
 
@@ -468,9 +467,9 @@ class NewSessionScreen(
         objective = (
             self.query_one(
                 "#objective",
-                Input,
+                TextArea,
             )
-            .value
+            .text
             .strip()
         )
 

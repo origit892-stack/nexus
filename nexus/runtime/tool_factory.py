@@ -16,6 +16,12 @@ from nexus.browser import run_browser
 from nexus.plugins import register_plugins
 from nexus.runtime.mcp_registry import register_mcp_tools
 
+from nexus.tools.texture_engine import (
+    bind_generate_texture,
+    generate_texture,
+    generate_texture_schema,
+)
+
 
 def _schema_map(
     schemas,
@@ -239,6 +245,16 @@ def build_registry(
         register_mcp_tools(
             registry,
         )
+
+    # NEXUS_GENERATE_TEXTURE_TOOL_V2
+    registry.register(
+        "generate_texture",
+        "Generate AI textures for an existing 3D mesh.",
+        generate_texture_schema(),
+        bind_generate_texture(workspace),
+        "write",
+        "native",
+    )
 
     return (
         registry,

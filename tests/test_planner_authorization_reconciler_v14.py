@@ -242,3 +242,114 @@ def test_existing_valid_boundaries_are_preserved():
     ] == [
         "Existing forbidden action"
     ]
+
+
+def test_read_only_reconciler_never_leaves_forbidden_empty():
+    understanding = {
+        "mutation_policy": "READ_ONLY",
+        "explicitly_restricted": [],
+    }
+
+    plan = {
+        "current_phase": "inspection",
+        "authorized_now": [
+            "inspect assets",
+        ],
+        "forbidden_now": [],
+        "deferred_actions": [],
+        "approval_gates": [],
+        "targets": [],
+        "search_strategy": [],
+        "evidence_plan": [],
+        "evaluation_plan": [],
+        "selection_strategy": [],
+        "first_actions": [],
+        "stop_conditions": [],
+    }
+
+    result = reconcile_plan_authorization(
+        understanding=understanding,
+        plan=plan,
+    )
+
+    assert result["forbidden_now"]
+
+
+def test_read_only_reconciler_preserves_explicit_restrictions():
+    understanding = {
+        "mutation_policy": "READ_ONLY",
+        "explicitly_restricted": [
+            "Do not delete anything",
+            "Do not place assets in the map",
+        ],
+    }
+
+    plan = {
+        "current_phase": "inspection",
+        "authorized_now": [
+            "inspect assets",
+        ],
+        "forbidden_now": [],
+        "deferred_actions": [],
+        "approval_gates": [],
+        "targets": [],
+        "search_strategy": [],
+        "evidence_plan": [],
+        "evaluation_plan": [],
+        "selection_strategy": [],
+        "first_actions": [],
+        "stop_conditions": [],
+    }
+
+    result = reconcile_plan_authorization(
+        understanding=understanding,
+        plan=plan,
+    )
+
+    lowered = {
+        item.casefold()
+        for item in result[
+            "forbidden_now"
+        ]
+    }
+
+    assert (
+        "do not delete anything"
+        in lowered
+    )
+
+    assert (
+        "do not place assets in the map"
+        in lowered
+    )
+
+
+def test_mutating_plan_is_not_forced_into_read_only():
+    understanding = {
+        "mutation_policy": "MUTATING",
+        "explicitly_restricted": [],
+    }
+
+    plan = {
+        "current_phase": "implementation",
+        "authorized_now": [
+            "modify assets",
+        ],
+        "forbidden_now": [],
+        "deferred_actions": [],
+        "approval_gates": [],
+        "targets": [],
+        "search_strategy": [],
+        "evidence_plan": [],
+        "evaluation_plan": [],
+        "selection_strategy": [],
+        "first_actions": [],
+        "stop_conditions": [],
+    }
+
+    result = reconcile_plan_authorization(
+        understanding=understanding,
+        plan=plan,
+    )
+
+    assert result["forbidden_now"] == []

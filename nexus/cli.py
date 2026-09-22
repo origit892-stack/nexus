@@ -17,11 +17,8 @@ from .acceptance import (
     verify,
 )
 
-from .agent import Agent
 from .projects.registry import ProjectRegistry
 from .sessions.store import SessionStore
-from .sessions.runner import run_session
-from .ui.app import launch_home
 from .runtime.status import collect_status
 from .runtime.ui import banner as ui_banner, status_table, console as ui_console
 from .runtime.readiness_cli import check_runtime, require_runtime
@@ -406,6 +403,8 @@ def session_new(
         "--run/--no-run",
     ),
 ):
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .sessions.runner import run_session
     """Create a session in the selected project."""
 
     registry = ProjectRegistry()
@@ -455,6 +454,8 @@ def session_resume(
         "--project",
     ),
 ):
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .sessions.runner import run_session
     """Resume/run an existing project session."""
 
     registry = ProjectRegistry()
@@ -612,6 +613,10 @@ def init(
 def _chat(
     workspace,
 ):
+    # NEXUS700_FAST_STARTUP_LAZY_AGENT
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .agent import Agent
+    from .agent import Agent
     cfg = effective_config(
         workspace
     )
@@ -749,6 +754,10 @@ def run(
         "--workspace",
     ),
 ):
+    # NEXUS700_FAST_STARTUP_LAZY_AGENT
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .agent import Agent
+    from .agent import Agent
     ensure_model()
 
     root = require_workspace(
@@ -769,6 +778,17 @@ def run(
     ).run(
         task
     )
+
+    # NEXUS700_FAIL_CLOSED_AGENT_RESULT
+    if (
+        isinstance(result, str)
+        and result.startswith("AGENT_EXCEPTION=")
+    ):
+        typer.echo(
+            result,
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     console.print(
         "\n[bold cyan]"
@@ -1500,6 +1520,10 @@ def resume(
         "--workspace",
     ),
 ):
+    # NEXUS700_FAST_STARTUP_LAZY_AGENT
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .agent import Agent
+    from .agent import Agent
     root = require_workspace(
         workspace
     )
@@ -1982,6 +2006,8 @@ def nexus_upgrade():
 
 
 def main():
+    # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+    from .ui.app import launch_home
     """
     Nexus executable entrypoint.
 
@@ -1999,6 +2025,8 @@ def main():
 
     if not args:
         prepare_terminal()
+        # NEXUS700_FAST_STARTUP_TRANSITIVE_LAZY
+        from .ui.app import launch_home
         return launch_home()
 
     if args in (

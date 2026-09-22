@@ -12,13 +12,126 @@ from nexus.runtime.understanding import (
     extract_json_object,
     load_project_context,
     load_understanding_config,
+    _generate_final_answer,
 )
+
+
+# PLANNER_CRITIC_PAYLOAD_V180
+def normalize_planner_critic_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Canonicalize Planner Critic structured output.
+
+    The existing Planner contract uses PASS / FAIL.
+    FAIL may carry a corrected_plan for semantic repair.
+    """
+    result = dict(payload)
+
+    verdict = str(
+        result.get(
+            "verdict",
+            "",
+        )
+    ).strip().upper()
+
+    if verdict not in {
+        "PASS",
+        "FAIL",
+    }:
+        raise PlanningError(
+            "Planner critic returned invalid verdict: "
+            + repr(verdict)
+        )
+
+    result["verdict"] = verdict
+
+    issues = result.get(
+        "issues",
+        [],
+    )
+
+    if isinstance(issues, str):
+        issues = [issues]
+
+    if not isinstance(issues, list):
+        raise PlanningError(
+            "Planner critic issues must be a list."
+        )
+
+    result["issues"] = [
+        str(item).strip()
+        for item in issues
+        if str(item).strip()
+    ]
+
+    summary = result.get(
+        "summary",
+        "",
+    )
+
+    if not isinstance(summary, str):
+        raise PlanningError(
+            "Planner critic summary must be string."
+        )
+
+    result["summary"] = summary
+
+    corrected = result.get(
+        "corrected_plan"
+    )
+
+    if (
+        corrected is not None
+        and not isinstance(corrected, dict)
+    ):
+        raise PlanningError(
+            "Planner critic corrected_plan must be "
+            "an object when provided."
+        )
+
+    return result
+
+
+
+
 
 
 class PlanningError(
     RuntimeError
 ):
     pass
+
+
+def _generate_planner_final(
+    *,
+    model: Any,
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    temperature: float | None = None,
+    top_p: float | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Generate Planner structured output in R1 final-answer
+    mode.
+
+    temperature and top_p are accepted for compatibility
+    with existing Planner generation call sites. Final-answer
+    mode intentionally remains deterministic and therefore
+    does not forward those sampling values.
+    """
+    _ = (
+        temperature,
+        top_p,
+    )
+
+    return _generate_final_answer(
+        model=model,
+        tokenizer=tokenizer,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
 
 
 PLAN_FIELDS = (
@@ -161,6 +274,30 @@ def normalize_plan_structure(
         payload
     )
 
+    # SPARSE_SIMPLE_PLAN_FIELDS_V180
+    #
+    # Some simple plans legitimately have no gates, targets,
+    # evaluation strategy, or special evidence plan. The model
+    # may omit those list-shaped fields instead of returning [].
+    #
+    # Normalize only structurally optional list fields here.
+    # Do not invent authorization, forbidden work, phase, or
+    # completion conditions.
+    optional_list_fields = (
+        "approval_gates",
+        "targets",
+        "search_strategy",
+        "evidence_plan",
+        "evaluation_plan",
+        "selection_strategy",
+        "first_actions",
+    )
+
+    for field in optional_list_fields:
+        if field not in result:
+            result[field] = []
+
+
     for field in LIST_FIELDS:
         if (
             field in result
@@ -240,7 +377,8 @@ def _planner_system(
         "- define the most useful evidence to gather,\n"
         "- plan technical/visual evaluation when appropriate,\n"
         "- define selection logic when the user asks to choose,\n"
-        "- stop when the authorized phase is complete.\n\n"
+        "- stop when the authorized phase is complete.\n"
+        "- BULK OPERATIONS: If a task requires analyzing or modifying many files (e.g., > 5 files), you MUST plan to write and execute a local script to process them and output a summary, rather than reading files individually.\n\n"
         "For discovery tasks, prefer targeted search and "
         "evidence resolution over recursively walking every "
         "directory in the repository.\n\n"
@@ -460,6 +598,87 @@ def reconcile_plan_authorization(
         )
     ]
 
+    # READ_ONLY_AUTHORIZATION_BOUNDARY_V173
+    #
+    # Preserve all existing reconciliation behavior and add
+    # only the missing negative authorization boundary.
+    #
+    # Prefer restrictions already produced by Understanding.
+    # If none are available, add one generic non-domain-specific
+    # mutation prohibition so READ_ONLY can never result in an
+    # empty forbidden_now boundary.
+    mutation_policy = str(
+        understanding.get(
+            "mutation_policy",
+            "UNSURE",
+        )
+    ).strip().upper()
+
+    if mutation_policy == "READ_ONLY":
+        restriction_values = []
+
+        for key in (
+            "explicitly_restricted",
+            "explicit_restrictions",
+            "constraints",
+            "exclude_from_work",
+        ):
+            value = understanding.get(
+                key,
+                [],
+            )
+
+            if isinstance(
+                value,
+                str,
+            ):
+                value = [
+                    value
+                ]
+
+            if isinstance(
+                value,
+                list,
+            ):
+                restriction_values.extend(
+                    value
+                )
+
+        forbidden_keys = {
+            str(item)
+            .strip()
+            .casefold()
+            for item in forbidden
+            if str(item).strip()
+        }
+
+        for restriction in restriction_values:
+            text = str(
+                restriction
+            ).strip()
+
+            if not text:
+                continue
+
+            key = text.casefold()
+
+            if key in forbidden_keys:
+                continue
+
+            forbidden.append(
+                text
+            )
+
+            forbidden_keys.add(
+                key
+            )
+
+        if not forbidden:
+            forbidden.append(
+                "Project mutation is not authorized "
+                "during the current READ_ONLY phase."
+            )
+
     result[
         "authorized_now"
     ] = authorized
@@ -476,7 +695,210 @@ def reconcile_plan_authorization(
         "stop_conditions"
     ] = stop_conditions
 
+    # FIRST_ACTION_FROM_AUTHORIZATION_V180
+    #
+    # first_actions is not separate authority.
+    # When reconciliation has already established current
+    # authorized work, the first authorized item is a safe
+    # focused starting action rather than newly invented work.
+    authorized_now = result.get(
+        "authorized_now",
+        [],
+    )
+
+    first_actions = result.get(
+        "first_actions",
+        [],
+    )
+
+    if (
+        authorized_now
+        and not first_actions
+    ):
+        result[
+            "first_actions"
+        ] = [
+            authorized_now[0]
+        ]
+
+    # READ_ONLY_EXPLICIT_WORK_RECONCILIATION_V180
+    #
+    # For a READ_ONLY task, explicit requested inspection,
+    # lookup, discovery, analysis, or reporting work is safe
+    # current authority. This projection uses only facts
+    # already present in the Understanding result.
+    mutation_policy = str(
+        understanding.get(
+            "mutation_policy",
+            "UNSURE",
+        )
+    ).strip().upper()
+
+    authorized_now = result.get(
+        "authorized_now",
+        [],
+    )
+
+    explicit_requests = understanding.get(
+        "explicit_requests",
+        [],
+    )
+
+    if isinstance(
+        explicit_requests,
+        str,
+    ):
+        explicit_requests = [
+            explicit_requests
+        ]
+
+    if (
+        mutation_policy == "READ_ONLY"
+        and not authorized_now
+        and isinstance(
+            explicit_requests,
+            (list, tuple),
+        )
+    ):
+        projected = [
+            str(item).strip()
+            for item in explicit_requests
+            if str(item).strip()
+        ]
+
+        if projected:
+            result[
+                "authorized_now"
+            ] = projected
+
+    # first_actions is a focus projection of authority,
+    # never an independent source of authority.
+    authorized_now = result.get(
+        "authorized_now",
+        [],
+    )
+
+    if (
+        authorized_now
+        and not result.get(
+            "first_actions",
+            [],
+        )
+    ):
+        result[
+            "first_actions"
+        ] = [
+            authorized_now[0]
+        ]
+
+    # Completion is also projected from the Understanding
+    # contract rather than invented by the Planner.
+    if not result.get(
+        "stop_conditions",
+        [],
+    ):
+        completion_definition = (
+            understanding.get(
+                "completion_definition",
+                [],
+            )
+        )
+
+        if isinstance(
+            completion_definition,
+            str,
+        ):
+            completion_definition = [
+                completion_definition
+            ]
+
+        completion_items = []
+
+        if isinstance(
+            completion_definition,
+            (list, tuple),
+        ):
+            completion_items = [
+                str(item).strip()
+                for item
+                in completion_definition
+                if str(item).strip()
+            ]
+
+        if completion_items:
+            result[
+                "stop_conditions"
+            ] = completion_items
+
+        else:
+            desired_end_state = str(
+                understanding.get(
+                    "desired_end_state",
+                    "",
+                )
+            ).strip()
+
+            if desired_end_state:
+                result[
+                    "stop_conditions"
+                ] = [
+                    desired_end_state
+                ]
+
     return result
+
+
+
+# ACTIONABLE_CURRENT_WORK_V180
+def understanding_requires_current_work(
+    understanding: dict[str, Any],
+) -> bool:
+    """
+    Determine whether the real Nexus Understanding schema
+    describes unresolved work for the current turn.
+    """
+    actionable_lists = (
+        "explicit_requests",
+        "unknowns_requiring_discovery",
+        "evidence_needed",
+        "recommended_plan",
+        "completion_definition",
+    )
+
+    for field in actionable_lists:
+        value = understanding.get(field)
+
+        if isinstance(value, str):
+            if value.strip():
+                return True
+
+        elif isinstance(value, (list, tuple)):
+            if any(
+                str(item).strip()
+                for item in value
+            ):
+                return True
+
+    user_goal = str(
+        understanding.get(
+            "user_goal",
+            "",
+        )
+    ).strip()
+
+    desired_end_state = str(
+        understanding.get(
+            "desired_end_state",
+            "",
+        )
+    ).strip()
+
+    return bool(
+        user_goal
+        and desired_end_state
+    )
+
+
 
 
 def validate_plan_semantics(
@@ -615,9 +1037,35 @@ def validate_plan_semantics(
             )
         )
 
+    # NONEMPTY_CURRENT_WORK_CONTRACT_V180
+    if understanding_requires_current_work(
+        understanding
+    ):
+        authorized_now = plan.get(
+            "authorized_now",
+            [],
+        )
+
+        first_actions = plan.get(
+            "first_actions",
+            [],
+        )
+
+        stop_conditions = plan.get(
+            "stop_conditions",
+            [],
+        )
+
+        # Semantic validity protects authorization only.
+        # first_actions and stop_conditions are execution
+        # readiness concerns, not universal Planner rules.
+        if not authorized_now:
+            errors.append(
+                "The Understanding result requires current "
+                "work, but authorized_now is empty."
+            )
+
     return errors
-
-
 def _planner_critic_system(
     context: str,
 ) -> str:
@@ -645,6 +1093,7 @@ def _planner_critic_system(
         "- search plans that are too broad or unrelated\n"
         "- plans that exceed the user's requested phase\n"
         "- plans that fail to reach the requested result\n"
+        "- plans that attempt to read/process many files individually instead of using a script for bulk operations\n"
         "- forbidden_now left empty even though the plan itself "
         "contains gated deferred actions\n"
         "- stop_conditions that require future/deferred work "
@@ -686,6 +1135,13 @@ def critique_plan(
     plan: dict[str, Any],
     project_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    """
+    Run the independent Planner Critic.
+
+    Structured output gets two attempts. The second attempt
+    is only a formatting-reliability retry; semantic behavior
+    remains unchanged.
+    """
     cfg = load_understanding_config()
 
     context = load_project_context(
@@ -735,94 +1191,72 @@ def critique_plan(
         )
     )
 
-    raw, metrics = _generate(
-        model=model,
-        tokenizer=tokenizer,
-        messages=[
-            {
-                "role": "system",
-                "content": system,
-            },
-            {
-                "role": "user",
-                "content": user,
-            },
-        ],
-        max_tokens=int(
-            cfg.get(
-                "critic_max_tokens",
-                1024,
+    last_error: Exception | None = None
+
+    for attempt in range(1, 3):
+        raw, metrics = _generate_planner_final(
+            model=model,
+            tokenizer=tokenizer,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system,
+                },
+                {
+                    "role": "user",
+                    "content": user,
+                },
+            ],
+            max_tokens=int(
+                cfg.get(
+                    "critic_max_tokens",
+                    1024,
+                )
+            ),
+            temperature=0.0,
+            top_p=0.0,
+        )
+
+        try:
+            parsed = extract_json_object(
+                raw
             )
-        ),
-        temperature=0.0,
-        top_p=0.0,
+
+            if not isinstance(
+                parsed,
+                dict,
+            ):
+                raise PlanningError(
+                    "Planner critic returned "
+                    "non-object JSON."
+                )
+
+            result = (
+                normalize_planner_critic_payload(
+                    parsed
+                )
+            )
+
+            result["_metrics"] = metrics
+            result["_attempt"] = attempt
+
+            return result
+
+        except (
+            UnderstandingError,
+            PlanningError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            last_error = exc
+
+    raise PlanningError(
+        "Planner critic did not return valid "
+        "structured JSON after 2 attempts: "
+        + str(last_error)
     )
 
-    try:
-        result = extract_json_object(
-            raw
-        )
-    except UnderstandingError as exc:
-        raise PlanningError(
-            "Planner critic did not return valid JSON: "
-            + str(exc)
-        ) from exc
 
-    verdict = result.get(
-        "verdict"
-    )
-
-    if verdict not in {
-        "PASS",
-        "FAIL",
-    }:
-        raise PlanningError(
-            "Planner critic returned invalid verdict."
-        )
-
-    issues = result.get(
-        "issues",
-        [],
-    )
-
-    if isinstance(
-        issues,
-        str,
-    ):
-        issues = [
-            issues
-        ]
-
-    if not isinstance(
-        issues,
-        list,
-    ):
-        raise PlanningError(
-            "Planner critic issues must be a list."
-        )
-
-    result[
-        "issues"
-    ] = issues
-
-    summary = result.get(
-        "summary",
-        "",
-    )
-
-    if not isinstance(
-        summary,
-        str,
-    ):
-        raise PlanningError(
-            "Planner critic summary must be string."
-        )
-
-    result[
-        "_metrics"
-    ] = metrics
-
-    return result
 
 
 def approve_or_repair_plan(
@@ -865,6 +1299,34 @@ def approve_or_repair_plan(
             progress(
                 "PLANNER: SEMANTIC CONSISTENCY CHECK"
             )
+
+        # DETERMINISTIC_PLANNER_GATE_V180
+        #
+        # A semantically valid plan does not require an LLM
+        # critic to authorize execution. The critic exists to
+        # repair actual semantic failures, not to gate the
+        # normal success path.
+        if not local_errors:
+            current[
+                "_nexus_planner_critic"
+            ] = {
+                "verdict": "PASS",
+                "issues": [],
+                "summary": (
+                    "Deterministic semantic validation "
+                    "passed."
+                ),
+                "source": (
+                    "DETERMINISTIC_SEMANTIC_GATE"
+                ),
+            }
+
+            if progress is not None:
+                progress(
+                    "PLAN APPROVED"
+                )
+
+            return current
 
         critic = critique_plan(
             user_request=user_request,
@@ -935,7 +1397,7 @@ def approve_or_repair_plan(
         )
 
         structural_errors = validate_plan(
-            corrected
+            normalize_plan_structure(corrected)
         )
 
         if structural_errors:
@@ -1017,7 +1479,7 @@ def plan_task(
             "PLANNER: REASONING"
         )
 
-    raw, metrics = _generate(
+    raw, metrics = _generate_planner_final(
         model=model,
         tokenizer=tokenizer,
         messages=messages,
@@ -1040,7 +1502,7 @@ def plan_task(
         )
 
         errors = validate_plan(
-            payload
+            normalize_plan_structure(payload)
         )
 
     except UnderstandingError as exc:
@@ -1066,7 +1528,7 @@ def plan_task(
             )
 
         repaired_raw, repair_metrics = (
-            _generate(
+            _generate_planner_final(
                 model=model,
                 tokenizer=tokenizer,
                 messages=_repair_messages(
@@ -1101,7 +1563,7 @@ def plan_task(
             )
 
             errors = validate_plan(
-                payload
+                normalize_plan_structure(payload)
             )
 
         except UnderstandingError as exc:
@@ -1178,6 +1640,52 @@ def plan_task(
         )
 
     return payload
+
+
+# EXECUTION_READY_PLAN_V180
+def validate_execution_ready_plan(
+    *,
+    understanding: dict[str, Any],
+    plan: dict[str, Any],
+) -> list[str]:
+    """
+    Validate requirements needed by the Nexus 1.8 executor.
+
+    This is deliberately separate from generic Planner
+    semantic validation.
+    """
+    errors: list[str] = []
+
+    if not understanding_requires_current_work(
+        understanding
+    ):
+        return errors
+
+    if not plan.get(
+        "authorized_now",
+        [],
+    ):
+        errors.append(
+            "Execution-ready plan requires authorized_now."
+        )
+
+    if not plan.get(
+        "first_actions",
+        [],
+    ):
+        errors.append(
+            "Execution-ready plan requires first_actions."
+        )
+
+    if not plan.get(
+        "stop_conditions",
+        [],
+    ):
+        errors.append(
+            "Execution-ready plan requires stop_conditions."
+        )
+
+    return errors
 
 
 def render_plan_brief(

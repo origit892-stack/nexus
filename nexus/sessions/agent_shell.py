@@ -1,4 +1,5 @@
 from __future__ import annotations
+from nexus.sessions.runner import _run_turn_checklist_session
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -901,6 +902,15 @@ def run_agent_shell(
         session_id,
     )
 
+    # NEXUS700_AGENT_SHELL_TURN_CHECKLIST_ROUTE_V1
+    if initial_run:
+        _turn_result = _run_turn_checklist_session(
+            project_path,
+            session_id,
+            progress=print,
+        )
+        if _turn_result is not None:
+            return _turn_result
     if initial_run:
         _execute_initial(
             project_path,
