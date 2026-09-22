@@ -66,6 +66,7 @@ class Milestone:
     dependencies: tuple[str, ...]
     evidence_required: tuple[str, ...]
     completion_definition: tuple[str, ...]
+    mutation_policy: str = "UNSURE"
 
     def to_dict(
         self,
@@ -86,6 +87,8 @@ class Milestone:
                 list(
                     self.completion_definition
                 ),
+            "mutation_policy":
+                self.mutation_policy,
         }
 
 
@@ -389,6 +392,7 @@ def validate_milestone_plan(
             "dependencies",
             "evidence_required",
             "completion_definition",
+            "mutation_policy",
         ):
             if field not in milestone:
                 errors.append(
@@ -433,6 +437,35 @@ def validate_milestone_plan(
                     f"milestone {index} "
                     f"{field} must be a list"
                 )
+
+    for index, milestone in enumerate(
+        milestones,
+        start=1,
+    ):
+        if not isinstance(
+            milestone,
+            dict,
+        ):
+            continue
+
+        policy = str(
+            milestone.get(
+                "mutation_policy",
+                "",
+            )
+            or ""
+        ).strip().upper()
+
+        if policy not in {
+            "READ_ONLY",
+            "MUTATING",
+            "UNSURE",
+        }:
+            errors.append(
+                f"milestone {index} "
+                "mutation_policy must be "
+                "READ_ONLY, MUTATING, or UNSURE"
+            )
 
     expected_hash = (
         master_prompt_hash(
@@ -542,14 +575,11 @@ def milestone_compiler_system_prompt() -> str:
 You are the Nexus Master Prompt Milestone Compiler.
 
 You do NOT execute the user's task.
-
 Your job is to transform one large master request into a
 small ordered sequence of semantically complete milestones.
-
 The original user request is authoritative.
 
 CRITICAL RULES:
-
 1. Preserve every explicit requirement.
 2. Preserve every explicit restriction.
 3. Preserve every requested evidence requirement.
@@ -569,8 +599,33 @@ CRITICAL RULES:
 17. The final milestone should verify the master request's
     overall completion when appropriate.
 
-Return exactly one JSON object with:
+MUTATION POLICY CONTRACT:
+Every milestone object MUST contain "mutation_policy".
+Its value MUST be exactly one of:
+"READ_ONLY", "MUTATING", or "UNSURE".
 
+READ_ONLY means the milestone itself needs only observation,
+reading, inspection, reasoning, or reporting and does not
+require commands, tests, file changes, delegation, or another
+capability blocked by READ_ONLY mode.
+
+MUTATING means completing the milestone requires creating,
+editing, deleting, repairing, executing commands or tests,
+running programs, delegating work, or otherwise using a tool
+that READ_ONLY mode blocks.
+
+UNSURE is permitted only when the milestone genuinely cannot
+be classified. Runtime treats UNSURE as READ_ONLY.
+
+Global boundary restrictions do NOT determine milestone
+mutation policy. Restrictions such as "do not modify Nexus",
+"do not modify BunkerGame", "do not write outside workspace",
+or "respect READ-ONLY milestones" constrain scope but must
+not turn an otherwise MUTATING milestone into READ_ONLY.
+
+Classify every milestone independently.
+
+Return exactly one JSON object with:
 {
   "master_prompt_sha256": "string",
   "milestones": [
@@ -582,7 +637,8 @@ Return exactly one JSON object with:
       "restrictions": ["string"],
       "dependencies": ["string"],
       "evidence_required": ["string"],
-      "completion_definition": ["string"]
+      "completion_definition": ["string"],
+      "mutation_policy": "READ_ONLY | MUTATING | UNSURE"
     }
   ],
   "global_restrictions": ["string"],
@@ -682,7 +738,12 @@ def milestone_plan_from_payload(
                     "completion_definition"
                 ]
             ),
-        )
+                    mutation_policy=str(
+                item[
+                    "mutation_policy"
+                ]
+            ).strip().upper(),
+)
         for item in payload[
             "milestones"
         ]
@@ -1516,3 +1577,138 @@ def _protocol_json_field(
         return None
 
     return value
+
+
+def milestone_requires_normal_capability(
+    milestone: Milestone,
+) -> bool:
+    """
+    Determine whether the milestone contract explicitly requires
+    capability unavailable in READ_ONLY mode.
+
+    This is intentionally one-way authorization reconciliation:
+    it may escalate READ_ONLY/UNSURE to MUTATING when the compiled
+    milestone itself requires execution or mutation. It never
+    downgrades MUTATING and never uses global restrictions as
+    authorization signals.
+    """
+    text = "\n".join(
+        (
+            str(milestone.title),
+            str(milestone.objective),
+            *(
+                str(value)
+                for value in milestone.requirements
+            ),
+            *(
+                str(value)
+                for value in milestone.evidence_required
+            ),
+            *(
+                str(value)
+                for value
+                in milestone.completion_definition
+            ),
+        )
+    ).lower()
+
+    phrases = (
+        "create ",
+        "implement ",
+        "add runnable",
+        "add ",
+        "write ",
+        "edit ",
+        "modify ",
+        "update ",
+        "delete ",
+        "remove ",
+        "repair ",
+        "fix ",
+        "generate ",
+        "install ",
+        "execute ",
+        "run ",
+        "run the ",
+        "run full",
+        "run tests",
+        "run the tests",
+        "run the complete test",
+        "run the full",
+        "test suite",
+        "unittest",
+        "pytest",
+        "exercise the cli",
+        "exercise ",
+        "invoke the cli",
+        "separate processes",
+        "separate process",
+        "process executions",
+        "command-line",
+        "command line",
+        "cli acceptance",
+        "delegat",
+    )
+
+    return any(
+        phrase in text
+        for phrase in phrases
+    )
+
+
+def reconcile_milestone_mutation_policies(
+    plan: MilestonePlan,
+) -> MilestonePlan:
+    """
+    Reconcile compiler policy with explicit milestone capability
+    requirements.
+
+    MUTATING is preserved. READ_ONLY/UNSURE are escalated only
+    when the milestone's own semantic contract requires NORMAL
+    execution capability.
+    """
+    reconciled = []
+
+    for milestone in plan.milestones:
+        policy = str(
+            milestone.mutation_policy
+            or "UNSURE"
+        ).strip().upper()
+
+        if (
+            policy != "MUTATING"
+            and milestone_requires_normal_capability(
+                milestone
+            )
+        ):
+            policy = "MUTATING"
+
+        reconciled.append(
+            Milestone(
+                id=milestone.id,
+                title=milestone.title,
+                objective=milestone.objective,
+                requirements=milestone.requirements,
+                restrictions=milestone.restrictions,
+                dependencies=milestone.dependencies,
+                evidence_required=milestone.evidence_required,
+                completion_definition=(
+                    milestone.completion_definition
+                ),
+                mutation_policy=policy,
+            )
+        )
+
+    return MilestonePlan(
+        master_prompt_sha256=(
+            plan.master_prompt_sha256
+        ),
+        master_prompt=plan.master_prompt,
+        milestones=tuple(reconciled),
+        global_restrictions=(
+            plan.global_restrictions
+        ),
+        final_completion_definition=(
+            plan.final_completion_definition
+        ),
+    )

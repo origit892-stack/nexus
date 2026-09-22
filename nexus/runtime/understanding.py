@@ -14,6 +14,7 @@ from nexus.runtime.prompt_milestones import (
     normalize_milestone_payload,
     validate_milestone_plan,
     milestone_repair_messages,
+    reconcile_milestone_mutation_policies,
 )
 
 
@@ -1651,6 +1652,9 @@ def compile_master_prompt(
     plan = milestone_plan_from_payload(
         prompt=prompt,
         payload=payload,
+    )
+    plan = reconcile_milestone_mutation_policies(
+        plan
     )
 
     metrics["model_load_seconds"] = (

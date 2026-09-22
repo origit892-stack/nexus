@@ -477,3 +477,158 @@ def evaluate_completion_evidence(
             "has been observed."
         ),
     )
+
+
+def preplanned_evidence_requirements(
+    task: str,
+) -> EvidenceRequirements | None:
+    """
+    Decode authoritative external evidence requirements from a
+    canonical preplanned execution protocol.
+
+    None means the task is not a recognized preplanned protocol,
+    so the normal generic inference path remains authoritative.
+
+    An explicitly empty EVIDENCE_REQUIRED list is authoritative.
+    """
+    import json
+    import re
+
+    text = str(task or "")
+
+    recognized = (
+        "NEXUS MASTER PROMPT MILESTONE MODE"
+        in text
+        or "NEXUS_MILESTONE_FINAL_VERIFICATION_V1"
+        in text
+    )
+
+    if not recognized:
+        return None
+
+    label = "EVIDENCE_REQUIRED:"
+
+    if label not in text:
+        return EvidenceRequirements()
+
+    tail = text.split(
+        label,
+        1,
+    )[1].lstrip()
+
+    if not tail:
+        return EvidenceRequirements()
+
+    try:
+        values, _end = (
+            json.JSONDecoder()
+            .raw_decode(tail)
+        )
+    except Exception:
+        return EvidenceRequirements()
+
+    if not isinstance(values, list):
+        return EvidenceRequirements()
+
+    normalized = tuple(
+        " ".join(
+            str(value)
+            .strip()
+            .lower()
+            .replace("_", " ")
+            .replace("-", " ")
+            .split()
+        )
+        for value in values
+        if str(value).strip()
+    )
+
+    def has_phrase(
+        *phrases: str,
+    ) -> bool:
+        for value in normalized:
+            for phrase in phrases:
+                phrase = " ".join(
+                    phrase.lower().split()
+                )
+
+                # Single-word evidence categories match whole
+                # lexical words only. This prevents "test" from
+                # matching "playtest".
+                if " " not in phrase:
+                    if re.search(
+                        r"(?<![a-z0-9])"
+                        + re.escape(phrase)
+                        + r"(?![a-z0-9])",
+                        value,
+                    ):
+                        return True
+                elif phrase in value:
+                    return True
+
+        return False
+
+    artifact = has_phrase(
+        "artifact",
+        "artifacts",
+        "file",
+        "files",
+        "source",
+        "implementation",
+    )
+
+    tests = has_phrase(
+        "test",
+        "tests",
+        "testing",
+        "test suite",
+        "unit test",
+        "unit tests",
+        "unittest",
+        "pytest",
+        "compile",
+        "compilation",
+    )
+
+    integration = has_phrase(
+        "integration",
+        "integrated",
+        "rojo",
+        "sync",
+        "synchronization",
+        "deploy",
+        "deployment",
+    )
+
+    studio = has_phrase(
+        "studio",
+        "roblox studio",
+    )
+
+    runtime = has_phrase(
+        "runtime",
+        "playtest",
+        "playtests",
+        "play test",
+        "play tests",
+        "gameplay",
+    )
+
+    visual = has_phrase(
+        "visual",
+        "visual qa",
+        "appearance",
+        "screenshot",
+        "screenshots",
+        "render",
+        "renders",
+    )
+
+    return EvidenceRequirements(
+        artifact=artifact,
+        tests=tests,
+        integration=integration,
+        studio=studio,
+        runtime=runtime,
+        visual=visual,
+    )

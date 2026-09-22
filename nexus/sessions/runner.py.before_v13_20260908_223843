@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from nexus.agent import Agent
+from nexus.config import effective_config
+from nexus.sessions.store import (
+    SessionStore,
+)
+
+
+def run_session(
+    project_path,
+    session_id,
+):
+    store = SessionStore(
+        project_path
+    )
+
+    session = store.get(
+        session_id
+    )
+
+    if session is None:
+        raise KeyError(
+            session_id
+        )
+
+    session.status = "RUNNING"
+
+    store.save(
+        session
+    )
+
+    try:
+        workspace = str(
+            project_path
+        )
+
+        cfg = effective_config(
+            project_path
+        )
+
+        result = Agent(
+            cfg,
+            workspace,
+            role="director",
+            live=True,
+        ).run(
+            session.objective
+        )
+
+        session.status = "COMPLETED"
+        session.last_result = str(
+            result
+        )
+
+        run_id = getattr(
+            result,
+            "run_id",
+            None,
+        )
+
+        if run_id:
+            session.run_id = str(
+                run_id
+            )
+
+        store.save(
+            session
+        )
+
+        return result
+
+    except KeyboardInterrupt:
+        session.status = "INTERRUPTED"
+        session.last_result = (
+            "Session interrupted by user."
+        )
+
+        store.save(
+            session
+        )
+
+        raise
+
+    except Exception as exc:
+        session.status = "FAILED"
+        session.last_result = str(
+            exc
+        )
+
+        store.save(
+            session
+        )
+
+        raise

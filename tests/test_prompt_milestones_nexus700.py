@@ -108,7 +108,9 @@ def test_valid_plan_roundtrip():
                 "completion_definition": [
                     "Inspection complete"
                 ],
-            },
+                    "mutation_policy":
+                        "READ_ONLY",
+},
             {
                 "id":
                     "M2",
@@ -137,7 +139,9 @@ def test_valid_plan_roundtrip():
                 "completion_definition": [
                     "Verification complete"
                 ],
-            },
+                    "mutation_policy":
+                        "READ_ONLY",
+},
         ],
 
         "global_restrictions": [

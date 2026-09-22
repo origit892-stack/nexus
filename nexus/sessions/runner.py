@@ -1084,12 +1084,11 @@ def _milestone_result_failure(
     result,
 ):
     """
-    Return a failure reason when an Agent returned a
-    transport-style failure as ordinary text.
+    Detect authoritative non-completion returned as ordinary
+    Agent text.
 
-    Milestone orchestration must never convert an explicit
-    AGENT_EXCEPTION / failed completion gate into PASS merely
-    because Agent.run returned instead of raising.
+    VERIFICATION_PENDING is emitted by the Agent completion
+    evidence layer and cannot be converted into milestone PASS.
     """
     text = str(
         result or ""
@@ -1100,10 +1099,13 @@ def _milestone_result_failure(
         "NEXUS_MILESTONE_UNDERSTANDING_FAILED:",
         "NEXUS_UNDERSTANDING_FAILED:",
         "NEXUS_PLANNING_FAILED:",
+        "VERIFICATION_PENDING",
     )
 
     for prefix in failure_prefixes:
-        if text.startswith(prefix):
+        if text.startswith(
+            prefix
+        ):
             return text
 
     return None
@@ -1115,188 +1117,57 @@ def _milestone_capability_policy(
     milestone_index=None,
 ) -> str:
     """
-    Resolve capability from the persisted semantic contract.
+    Runtime authorization comes only from the persisted
+    compiled milestone mutation_policy.
 
-    READ_ONLY is reserved for an execution unit that forbids
-    mutation generally. A prohibition against mutating a named
-    target, another project, or anything outside an allowed
-    scope is a mutation boundary, not READ_ONLY.
+    Free-form restrictions are boundaries, not authorization.
+    Missing, malformed, and UNSURE policy fail closed.
     """
-
-    def _normalized(value):
-        return " ".join(
-            str(value)
-            .strip()
-            .lower()
-            .replace("_", " ")
-            .replace("-", " ")
-            .split()
-        )
-
-    def _is_explicit_read_only(value):
-        text = _normalized(value)
-
-        return any(
-            signal in text
-            for signal in (
-                "read only",
-                "without modification",
-                "without modifications",
-                "without modifying",
-                "no mutation",
-                "no mutations",
-            )
-        )
-
-    def _is_mutation_prohibition(value):
-        text = _normalized(value)
-
-        prefixes = (
-            "do not modify",
-            "do not mutate",
-            "must not modify",
-            "must not mutate",
-            "no modification",
-            "no modifications",
-        )
-
-        return next(
-            (
-                prefix
-                for prefix in prefixes
-                if prefix in text
-            ),
-            None,
-        )
-
-    def _is_scoped_prohibition(value):
-        text = _normalized(value)
-
-        prefix = _is_mutation_prohibition(
-            text
-        )
-
-        if prefix is None:
-            return False
-
-        # Explicit location/scope boundaries.
-        if any(
-            signal in (" " + text + " ")
-            for signal in (
-                " outside ",
-                " except ",
-                " except for ",
-                " other than ",
-                " beyond ",
-                " only inside ",
-                " only within ",
-            )
-        ):
-            return True
-
-        # For "no modification(s) to X", X is an explicit
-        # protected target. This constrains mutation scope.
-        for marker in (
-            "no modification to ",
-            "no modifications to ",
-        ):
-            if text.startswith(marker):
-                target = text[
-                    len(marker):
-                ].strip()
-
-                if target:
-                    return True
-
-        # For imperative prohibitions, anything following the
-        # verb that names a target is scoped unless it is the
-        # generic execution object itself.
-        for marker in (
-            "do not modify ",
-            "do not mutate ",
-            "must not modify ",
-            "must not mutate ",
-        ):
-            if text.startswith(marker):
-                target = text[
-                    len(marker):
-                ].strip()
-
-                generic_targets = {
-                    "anything",
-                    "any files",
-                    "files",
-                    "the files",
-                    "the project",
-                    "the workspace",
-                    "workspace",
-                    "source",
-                    "the source",
-                }
-
-                if (
-                    target
-                    and target
-                    not in generic_targets
-                ):
-                    return True
-
-        return False
-
-    def _is_absolute_read_only(value):
-        text = _normalized(value)
-
-        if not text:
-            return False
-
-        if _is_explicit_read_only(text):
-            return True
-
-        if (
-            _is_mutation_prohibition(text)
-            is None
-        ):
-            return False
-
-        if _is_scoped_prohibition(text):
-            return False
-
-        return True
-
-    for value in plan.global_restrictions:
-        if _is_absolute_read_only(value):
-            return "READ_ONLY"
-
     if milestone_index is None:
-        return "NORMAL"
+        policies = tuple(
+            str(
+                getattr(
+                    milestone,
+                    "mutation_policy",
+                    "UNSURE",
+                )
+                or "UNSURE"
+            ).strip().upper()
+            for milestone in plan.milestones
+        )
 
-    index = int(milestone_index)
+        if "MUTATING" in policies:
+            return "NORMAL"
+
+        return "READ_ONLY"
+
+    index = int(
+        milestone_index
+    )
 
     if (
         index < 0
-        or index >= len(plan.milestones)
+        or index >= len(
+            plan.milestones
+        )
     ):
         raise IndexError(
             "MILESTONE_INDEX_OUT_OF_RANGE"
         )
 
-    milestone = plan.milestones[index]
+    policy = str(
+        getattr(
+            plan.milestones[index],
+            "mutation_policy",
+            "UNSURE",
+        )
+        or "UNSURE"
+    ).strip().upper()
 
-    local_values = [
-        milestone.title,
-        milestone.objective,
-        *milestone.requirements,
-        *milestone.restrictions,
-        *milestone.completion_definition,
-    ]
+    if policy == "MUTATING":
+        return "NORMAL"
 
-    if any(
-        _is_absolute_read_only(value)
-        for value in local_values
-    ):
-        return "READ_ONLY"
-
-    return "NORMAL"
+    return "READ_ONLY"
 
 
 # NEXUS700_TURN_CHECKLIST_PRODUCT_ROUTE_V1

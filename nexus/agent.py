@@ -59,6 +59,7 @@ from nexus.runtime.fast_first import (
     classify_fast_first,
     fast_lookup_contract,
     deterministic_fast_completion,
+    FastFirstDecision,
 )
 
 from nexus.runtime.fast_lookup_engine import (
@@ -69,6 +70,7 @@ from nexus.runtime.fast_lookup_engine import (
 from nexus.runtime.completion_evidence import (
     evaluate_completion_evidence,
     infer_evidence_requirements,
+    preplanned_evidence_requirements,
 )
 
 # NEXUS700_MILESTONE_INTAKE_IMPORT_V1
@@ -688,19 +690,26 @@ class Agent:
         )
 
         requirements = (
-            infer_evidence_requirements(
-                task=task,
-                understanding=(
-                    understanding
-                    if isinstance(
-                        understanding,
-                        dict,
-                    )
-                    else None
-                ),
-                plan=plan,
+            preplanned_evidence_requirements(
+                task
             )
         )
+
+        if requirements is None:
+            requirements = (
+                infer_evidence_requirements(
+                    task=task,
+                    understanding=(
+                        self._understanding
+                        if isinstance(
+                            self._understanding,
+                            dict,
+                        )
+                        else None
+                    ),
+                    plan=self._execution_plan,
+                )
+            )
 
         decision = (
             evaluate_completion_evidence(
@@ -956,7 +965,25 @@ class Agent:
         )
 
         # NEXUS700_FAST_FIRST_DECISION
-        fast_first = classify_fast_first(task)
+        fast_first = (
+            FastFirstDecision(
+                eligible=False,
+                route="NORMAL",
+                reason="preplanned_execution_bypass",
+                read_only=(
+                    self.capability_policy
+                    == "READ_ONLY"
+                ),
+                deterministic_completion=False,
+                skip_understanding_model=False,
+                skip_planner_model=True,
+                skip_completion_model=False,
+                max_tool_calls=0,
+                max_iterations=0,
+            )
+            if _raw_preplanned_execution
+            else classify_fast_first(task)
+        )
         self._fast_first_decision = fast_first
         self._fast_first_started_at = time.perf_counter()
         self._fast_first_tool_calls = 0

@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+
+from nexus.runtime.vision import (
+    OllamaVisionProvider,
+)
+
+
+@dataclass
+class GroundedTarget:
+    x: float
+    y: float
+    confidence: float
+    label: str
+    raw: str
+
+
+def _json_object(
+    text,
+):
+    text = str(
+        text or ""
+    ).strip()
+
+    try:
+        value = json.loads(
+            text
+        )
+
+        if isinstance(
+            value,
+            dict,
+        ):
+            return value
+
+    except Exception:
+        pass
+
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        text,
+        re.S | re.I,
+    )
+
+    if fenced:
+        return json.loads(
+            fenced.group(1)
+        )
+
+    loose = re.search(
+        r"\{.*\}",
+        text,
+        re.S,
+    )
+
+    if loose:
+        return json.loads(
+            loose.group(0)
+        )
+
+    raise ValueError(
+        "VISION_GROUNDING_JSON_MISSING"
+    )
+
+
+def _final_visual_answer(
+    provider,
+    prompt,
+):
+    """
+    Qwen3-VL may spend an entire small token budget in
+    hidden reasoning even when think=False is requested by
+    the Ollama API.
+
+    We never use hidden thinking as evidence.
+
+    Instead:
+      1. explicitly request /no_think
+      2. require final content
+      3. retry with bounded larger budgets only when the
+         provider reports VISION_EMPTY_RESPONSE
+    """
+
+    final_prompt = (
+        "/no_think\n"
+        "Do not provide reasoning. "
+        "Return only the requested final answer.\n\n"
+        + str(prompt)
+    )
+
+    errors = []
+
+    for budget in (
+        512,
+        1024,
+        1536,
+    ):
+        try:
+            finding = provider.analyze(
+                image_path=_final_visual_answer.image_path,
+                prompt=final_prompt,
+                num_predict=budget,
+            )
+
+            text = str(
+                finding.summary
+            ).strip()
+
+            if text:
+                return (
+                    finding,
+                    budget,
+                )
+
+        except RuntimeError as exc:
+            message = str(
+                exc
+            )
+
+            errors.append(
+                (
+                    budget,
+                    message,
+                )
+            )
+
+            if (
+                "VISION_EMPTY_RESPONSE"
+                not in message
+            ):
+                raise
+
+    details = "; ".join(
+        f"{budget}:{error}"
+        for budget, error in errors
+    )
+
+    raise RuntimeError(
+        "VISION_FINAL_ANSWER_EXHAUSTED="
+        + details
+    )
+
+
+def _analyze(
+    image_path,
+    model,
+    prompt,
+):
+    provider = OllamaVisionProvider(
+        model
+    )
+
+    _final_visual_answer.image_path = (
+        str(image_path)
+    )
+
+    finding, budget = (
+        _final_visual_answer(
+            provider,
+            prompt,
+        )
+    )
+
+    return (
+        finding,
+        budget,
+    )
+
+
+def ground_target(
+    image_path,
+    model,
+    target,
+    width,
+    height,
+):
+    prompt = f"""
+You are performing precise visual UI grounding.
+
+Screenshot pixel dimensions:
+width={int(width)}
+height={int(height)}
+
+Visible target:
+{target}
+
+Return JSON ONLY in exactly this schema:
+
+{{
+  "x": <center pixel x>,
+  "y": <center pixel y>,
+  "confidence": <number from 0 to 1>,
+  "label": "<short visible label>"
+}}
+
+Requirements:
+- x and y are absolute screenshot pixel coordinates.
+- Point to the CENTER of the visible target.
+- Do not output normalized coordinates.
+- Do not output percentages.
+- Do not explain your reasoning.
+- If the requested target is not visible, confidence must be 0.
+"""
+
+    finding, budget = _analyze(
+        image_path,
+        model,
+        prompt,
+    )
+
+    data = _json_object(
+        finding.summary
+    )
+
+    x = float(
+        data["x"]
+    )
+
+    y = float(
+        data["y"]
+    )
+
+    confidence = float(
+        data.get(
+            "confidence",
+            0,
+        )
+    )
+
+    label = str(
+        data.get(
+            "label",
+            "",
+        )
+    )
+
+    if not (
+        0 <= x <= float(width)
+        and 0 <= y <= float(height)
+    ):
+        raise ValueError(
+            "VISION_GROUNDING_OUT_OF_BOUNDS"
+        )
+
+    if confidence < 0.40:
+        raise ValueError(
+            "VISION_GROUNDING_LOW_CONFIDENCE="
+            + str(confidence)
+        )
+
+    return GroundedTarget(
+        x=x,
+        y=y,
+        confidence=confidence,
+        label=label,
+        raw=(
+            finding.summary
+            + "\nNEXUS_VISION_TOKEN_BUDGET="
+            + str(budget)
+        ),
+    )
+
+
+def verify_visual_state(
+    image_path,
+    model,
+):
+    prompt = """
+Inspect this UI screenshot using visible pixels only.
+
+Return JSON ONLY:
+
+{
+  "armed": true or false,
+  "typed_text": "<visible text inside the input>",
+  "success_visible": true or false
+}
+
+Rules:
+- armed=true only when ARMED=YES is visibly displayed.
+- typed_text must be the text visibly shown in the input.
+- success_visible=true only when SUCCESS is visibly displayed.
+- Do not infer DOM or hidden application state.
+- Do not explain.
+"""
+
+    finding, budget = _analyze(
+        image_path,
+        model,
+        prompt,
+    )
+
+    data = _json_object(
+        finding.summary
+    )
+
+    data[
+        "_vision_token_budget"
+    ] = budget
+
+    return (
+        data,
+        finding.summary,
+    )

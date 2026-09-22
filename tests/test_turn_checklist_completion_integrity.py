@@ -13,6 +13,7 @@ class Milestone:
     requirements: tuple
     restrictions: tuple
     completion_definition: tuple
+    mutation_policy: str = "UNSURE"
 
 
 @dataclass
@@ -91,7 +92,8 @@ def test_mutating_milestone_remains_normal():
                 completion_definition=(
                     "Test file exists",
                 ),
-            ),
+                    mutation_policy="MUTATING",
+),
         ),
     )
 
@@ -111,6 +113,7 @@ def _policy(
     restrictions=(),
     completion=(),
     global_restrictions=(),
+    mutation_policy="UNSURE",
 ):
     plan = Plan(
         global_restrictions=(
@@ -123,6 +126,7 @@ def _policy(
                 requirements=requirements,
                 restrictions=restrictions,
                 completion_definition=completion,
+                mutation_policy=mutation_policy,
             ),
         ),
     )
@@ -173,7 +177,8 @@ def test_outside_workspace_is_scope_not_read_only():
             restrictions=(
                 "Do not modify outside workspace",
             ),
-        )
+                mutation_policy="MUTATING",
+)
         == "NORMAL"
     )
 
@@ -186,7 +191,8 @@ def test_outside_named_project_is_scope_not_read_only():
                 "Do not modify BunkerGame or paths "
                 "outside /tmp/sandbox",
             ),
-        )
+                mutation_policy="MUTATING",
+)
         == "NORMAL"
     )
 
@@ -199,7 +205,8 @@ def test_global_outside_boundary_does_not_freeze_mutation():
                 "No modifications to BunkerGame "
                 "or paths outside /tmp/sandbox",
             ),
-        )
+                mutation_policy="MUTATING",
+)
         == "NORMAL"
     )
 
@@ -223,7 +230,8 @@ def test_named_protected_target_does_not_freeze_milestone():
             global_restrictions=(
                 "No modification to Nexus itself",
             ),
-        )
+                mutation_policy="MUTATING",
+)
         == "NORMAL"
     )
 
@@ -235,7 +243,8 @@ def test_named_project_boundary_does_not_freeze_milestone():
             global_restrictions=(
                 "Do not modify BunkerGame",
             ),
-        )
+                mutation_policy="MUTATING",
+)
         == "NORMAL"
     )
 
@@ -246,6 +255,35 @@ def test_absolute_file_prohibition_remains_read_only():
             restrictions=(
                 "Do not modify any files",
             ),
+        )
+        == "READ_ONLY"
+    )
+
+
+
+def test_missing_explicit_policy_fails_closed_even_for_mutating_text():
+    plan = Plan(
+        global_restrictions=(),
+        milestones=(
+            Milestone(
+                title="Create file",
+                objective="Write unit tests",
+                requirements=(
+                    "Create tests/test_x.py",
+                ),
+                restrictions=(),
+                completion_definition=(
+                    "Test file exists",
+                ),
+                mutation_policy="UNSURE",
+            ),
+        ),
+    )
+
+    assert (
+        _milestone_capability_policy(
+            plan,
+            milestone_index=0,
         )
         == "READ_ONLY"
     )
