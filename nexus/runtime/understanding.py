@@ -1573,20 +1573,25 @@ def compile_master_prompt(
         top_p=0.0,
     )
 
-    payload = extract_json_object(
-        raw
-    )
-
-    payload = (
-        normalize_milestone_payload(
-            payload
+    try:
+        payload = extract_json_object(
+            raw
         )
-    )
-
-    errors = validate_milestone_plan(
-        prompt=prompt,
-        payload=payload,
-    )
+        payload = (
+            normalize_milestone_payload(
+                payload
+            )
+        )
+        errors = validate_milestone_plan(
+            prompt=prompt,
+            payload=payload,
+        )
+    except UnderstandingError as exc:
+        payload = {}
+        errors = [
+            "compiler output was not valid JSON: "
+            + str(exc)
+        ]
 
     repairs = 0
 
@@ -1633,13 +1638,24 @@ def compile_master_prompt(
             f"milestone_repair_{repairs}"
         ] = repair_metrics
 
-        payload = extract_json_object(
-            repaired_raw
-        )
+        try:
+            repaired_payload = (
+                extract_json_object(
+                    repaired_raw
+                )
+            )
+        except UnderstandingError as exc:
+            errors = [
+                "schema repair "
+                + str(repairs)
+                + " did not return valid JSON: "
+                + str(exc)
+            ]
+            continue
 
         payload = (
             normalize_milestone_payload(
-                payload
+                repaired_payload
             )
         )
 
@@ -1652,6 +1668,7 @@ def compile_master_prompt(
         prompt=prompt,
         payload=payload,
     )
+
     plan = reconcile_milestone_mutation_policies(
         plan
     )
@@ -1659,7 +1676,6 @@ def compile_master_prompt(
     metrics["model_load_seconds"] = (
         load_seconds
     )
-
     metrics["repairs_used"] = repairs
 
     return plan, metrics
