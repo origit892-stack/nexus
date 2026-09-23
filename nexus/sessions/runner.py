@@ -1100,6 +1100,7 @@ def _milestone_result_failure(
         "NEXUS_UNDERSTANDING_FAILED:",
         "NEXUS_PLANNING_FAILED:",
         "VERIFICATION_PENDING",
+        "NEXUS_ACCEPTANCE_OVERRIDE=FAIL",
     )
 
     for prefix in failure_prefixes:
@@ -1109,7 +1110,6 @@ def _milestone_result_failure(
             return text
 
     return None
-
 
 def _milestone_capability_policy(
     plan,

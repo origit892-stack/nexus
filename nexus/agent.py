@@ -2008,6 +2008,7 @@ class Agent:
                             name,
                             args,
                             output,
+                                                    outcome="BLOCKED_BY_POLICY",
                         )
 
                         messages.append(
@@ -2077,6 +2078,7 @@ class Agent:
                             name,
                             args,
                             output,
+                                                    outcome="BLOCKED_BY_POLICY",
                         )
 
                         messages.append(
@@ -2129,6 +2131,7 @@ class Agent:
                             name,
                             args,
                             output,
+                                                    outcome="BLOCKED_BY_POLICY",
                         )
                         messages.append(
                             {
@@ -2236,6 +2239,30 @@ class Agent:
 
                             except PermissionError as e:
                                 output = str(e)
+                                evidence_ledger.record(
+                                    name,
+                                    args,
+                                    output,
+                                    outcome="EXECUTION_FAILED",
+                                )
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": call.id,
+                                        "content": (
+                                            self.context_engine
+                                            .trim_tool_result(
+                                                output
+                                            )
+                                        ),
+                                    }
+                                )
+                                if self.live:
+                                    self.say(
+                                        "[red]TOOL PERMISSION FAILURE[/red] "
+                                        + output
+                                    )
+                                continue
 
                     self._speed_governor.record_discovery_success(
                         tool_name=name

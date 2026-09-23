@@ -5,12 +5,14 @@ import time
 
 
 @dataclass
+@dataclass
 class ToolEvidence:
     tool: str
     args: dict
     output: str
     success: bool
     timestamp: float
+    outcome: str = "EXECUTED_SUCCESSFULLY"
 
 
 class EvidenceLedger:
@@ -22,26 +24,57 @@ class EvidenceLedger:
         tool,
         args,
         output,
+        *,
+        outcome=None,
     ):
         text = str(
             output
         )
 
-        failure_markers = (
-            "UNKNOWN_TOOL=",
-            "NEXUS_PERMISSION_BLOCK=",
-            "TOOL_EXCEPTION=",
-            "UNIVERSAL_TOOL_EXCEPTION=",
-            "WEB_FETCH_ERROR=",
-            "WEB_SEARCH_ERROR=",
-            "MCP_LIST_ERROR=",
-            "MCP_CALL_ERROR=",
-        )
+        if outcome is None:
+            failure_markers = (
+                "UNKNOWN_TOOL=",
+                "NEXUS_PERMISSION_BLOCK=",
+                "TOOL_EXCEPTION=",
+                "UNIVERSAL_TOOL_EXCEPTION=",
+                "WEB_FETCH_ERROR=",
+                "WEB_SEARCH_ERROR=",
+                "MCP_LIST_ERROR=",
+                "MCP_CALL_ERROR=",
+            )
 
-        success = not any(
-            marker in text
-            for marker
-            in failure_markers
+            if any(
+                marker in text
+                for marker
+                in failure_markers
+            ):
+                outcome = (
+                    "EXECUTION_FAILED"
+                )
+            else:
+                outcome = (
+                    "EXECUTED_SUCCESSFULLY"
+                )
+
+        outcome = str(
+            outcome
+        ).upper()
+
+        valid_outcomes = {
+            "EXECUTED_SUCCESSFULLY",
+            "BLOCKED_BY_POLICY",
+            "EXECUTION_FAILED",
+        }
+
+        if outcome not in valid_outcomes:
+            raise ValueError(
+                "INVALID_TOOL_EVIDENCE_OUTCOME="
+                + outcome
+            )
+
+        success = (
+            outcome
+            == "EXECUTED_SUCCESSFULLY"
         )
 
         self.items.append(
@@ -53,6 +86,7 @@ class EvidenceLedger:
                 output=text,
                 success=success,
                 timestamp=time.time(),
+                outcome=outcome,
             )
         )
 
@@ -100,6 +134,7 @@ class EvidenceLedger:
                 {
                     "tool": item.tool,
                     "success": item.success,
+                    "outcome": item.outcome,
                 }
                 for item in self.items
             ],

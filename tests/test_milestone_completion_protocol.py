@@ -40,3 +40,34 @@ def test_plain_success_not_failure():
         )
         is None
     )
+
+
+
+def test_acceptance_override_fail_cannot_become_milestone_pass():
+    result = (
+        "NEXUS_ACCEPTANCE_OVERRIDE=FAIL\n"
+        "MODEL_PASS_REJECTED=YES\n"
+        "REASON=PASS report contains incompatible evidence"
+    )
+
+    assert (
+        _milestone_result_failure(
+            result
+        )
+        == result
+    )
+
+
+def test_acceptance_override_text_inside_normal_prose_is_not_failure():
+    result = (
+        "Audit note: the literal marker "
+        "NEXUS_ACCEPTANCE_OVERRIDE=FAIL "
+        "is documented here, not emitted as status."
+    )
+
+    assert (
+        _milestone_result_failure(
+            result
+        )
+        is None
+    )
