@@ -127,7 +127,7 @@ Do not redo completed milestones. Verify whether the master request as a whole m
     )
 
 
-def test_agent_uses_semantic_input_only_on_preplanned_path():
+def test_agent_bypasses_semantic_model_on_preplanned_path():
     source = Path(
         agent_module.__file__
     ).read_text(
@@ -170,7 +170,9 @@ def test_agent_uses_semantic_input_only_on_preplanned_path():
         )
     )
 
-    direct_calls = []
+    direct_understanding_calls = []
+    direct_planner_calls = []
+    direct_brief_calls = []
 
     for statement in branch.body:
         for node in ast.walk(statement):
@@ -180,7 +182,7 @@ def test_agent_uses_semantic_input_only_on_preplanned_path():
             ):
                 continue
 
-            if not (
+            if (
                 isinstance(
                     node.func,
                     ast.Name,
@@ -188,11 +190,36 @@ def test_agent_uses_semantic_input_only_on_preplanned_path():
                 and node.func.id
                 == "understand_task"
             ):
-                continue
+                direct_understanding_calls.append(
+                    node
+                )
 
-            direct_calls.append(node)
+            if (
+                isinstance(
+                    node.func,
+                    ast.Name,
+                )
+                and node.func.id
+                == "plan_task"
+            ):
+                direct_planner_calls.append(
+                    node
+                )
 
-    normal_calls = []
+            if (
+                isinstance(
+                    node.func,
+                    ast.Attribute,
+                )
+                and node.func.attr
+                == "_preplanned_execution_brief"
+            ):
+                direct_brief_calls.append(
+                    node
+                )
+
+    normal_understanding_calls = []
+    normal_planner_calls = []
 
     for statement in branch.orelse:
         for node in ast.walk(statement):
@@ -202,7 +229,7 @@ def test_agent_uses_semantic_input_only_on_preplanned_path():
             ):
                 continue
 
-            if not (
+            if (
                 isinstance(
                     node.func,
                     ast.Name,
@@ -210,66 +237,32 @@ def test_agent_uses_semantic_input_only_on_preplanned_path():
                 and node.func.id
                 == "understand_task"
             ):
-                continue
+                normal_understanding_calls.append(
+                    node
+                )
 
-            normal_calls.append(node)
+            if (
+                isinstance(
+                    node.func,
+                    ast.Name,
+                )
+                and node.func.id
+                == "plan_task"
+            ):
+                normal_planner_calls.append(
+                    node
+                )
 
-    assert len(direct_calls) == 1
-    assert len(normal_calls) == 1
+    assert direct_understanding_calls == []
+    assert direct_planner_calls == []
+    assert len(direct_brief_calls) == 1
 
-    direct_argument = (
-        ast.get_source_segment(
-            source,
-            direct_calls[0].args[0],
-        )
-        or ""
-    )
+    assert len(
+        normal_understanding_calls
+    ) >= 1
 
-    normal_argument = (
-        ast.get_source_segment(
-            source,
-            normal_calls[0].args[0],
-        )
-        or ""
-    )
+    assert len(
+        normal_planner_calls
+    ) >= 1
 
-    assert (
-        direct_argument
-        == "_semantic_understanding_task"
-    )
-
-    assert normal_argument == "task"
-
-    direct_text = "\n".join(
-        ast.get_source_segment(
-            source,
-            statement,
-        )
-        or ""
-        for statement in branch.body
-    )
-
-    normal_text = "\n".join(
-        ast.get_source_segment(
-            source,
-            statement,
-        )
-        or ""
-        for statement in branch.orelse
-    )
-
-    assert (
-        "preplanned_understanding_prompt("
-        in direct_text
-    )
-
-    assert (
-        "_semantic_understanding_task"
-        in direct_text
-    )
-
-    assert (
-        "preplanned_understanding_prompt("
-        not in normal_text
-    )
 

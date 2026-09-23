@@ -1402,19 +1402,17 @@ def _finalize_understanding_payload(
             2,
         )
     )
-
     max_tokens = int(
         cfg.get(
             "finalizer_max_tokens",
             1024,
         )
     )
-
     last_error = (
         "No finalization attempt completed."
     )
-
     all_metrics: dict[str, Any] = {}
+    payload = None
 
     for attempt in range(
         1,
@@ -1461,7 +1459,6 @@ def _finalize_understanding_payload(
             payload = extract_json_object(
                 raw
             )
-
             payload = (
                 normalize_understanding_structure(
                     payload
@@ -1478,8 +1475,8 @@ def _finalize_understanding_payload(
                     all_metrics,
                 )
 
-            last_error = (
-                "; ".join(errors)
+            last_error = "; ".join(
+                errors
             )
 
             previous_output = (
@@ -1503,28 +1500,30 @@ def _finalize_understanding_payload(
                 + last_error
             )
 
-    # Model-driven finalization is exhausted. Before failing,
-    # apply the one deterministic recovery that cannot invent
-    # positive semantic content: omitted list fields become [].
-    payload = _complete_finalizer_empty_lists(
-        payload
-    )
-
-    final_errors = validate_understanding(
-        payload
-    )
-
-    if not final_errors:
-        if progress is not None:
-            progress(
-                "UNDERSTANDING: "
-                "FINALIZER EMPTY-LIST RECOVERY"
+    if payload is not None:
+        payload = (
+            _complete_finalizer_empty_lists(
+                payload
             )
-
-        return (
-            payload,
-            all_metrics,
         )
+
+        final_errors = (
+            validate_understanding(
+                payload
+            )
+        )
+
+        if not final_errors:
+            if progress is not None:
+                progress(
+                    "UNDERSTANDING: "
+                    "FINALIZER EMPTY-LIST RECOVERY"
+                )
+
+            return (
+                payload,
+                all_metrics,
+            )
 
     raise UnderstandingError(
         "Understanding finalizer failed: "

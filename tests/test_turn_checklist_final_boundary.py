@@ -67,7 +67,7 @@ def test_final_detector_precedes_master_preprocessor():
     assert final_detector < preprocessor
 
 
-def test_preplanned_execution_understands_without_planning():
+def test_preplanned_execution_bypasses_understanding_and_planning():
     source = Path(
         agent_module.__file__
     ).read_text(
@@ -91,7 +91,10 @@ def test_preplanned_execution_understands_without_planning():
     branches = []
 
     for node in ast.walk(run):
-        if not isinstance(node, ast.If):
+        if not isinstance(
+            node,
+            ast.If,
+        ):
             continue
 
         condition = (
@@ -130,9 +133,29 @@ def test_preplanned_execution_understands_without_planning():
         for statement in branch.orelse
     )
 
-    assert "understand_task(" in body
+    assert "understand_task(" not in body
     assert "plan_task(" not in body
+    assert (
+        "preplanned_understanding_prompt("
+        not in body
+    )
+
+    assert (
+        "self._preplanned_execution_brief("
+        in body
+    )
+    assert (
+        "self._understanding = None"
+        in body
+    )
+    assert (
+        "self._execution_plan = None"
+        in body
+    )
+
+    assert "understand_task(" in orelse
     assert "plan_task(" in orelse
+
 
 
 def test_runner_wraps_final_verification():

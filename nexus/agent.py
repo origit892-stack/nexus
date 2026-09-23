@@ -975,7 +975,7 @@ class Agent:
                     == "READ_ONLY"
                 ),
                 deterministic_completion=False,
-                skip_understanding_model=False,
+                skip_understanding_model=True,
                 skip_planner_model=True,
                 skip_completion_model=False,
                 max_tool_calls=0,
@@ -1091,51 +1091,23 @@ class Agent:
 
             return final
 
-        # NEXUS700_PREPLANNED_REASONING_BYPASS_V4
+        # NEXUS700_PREPLANNED_REASONING_BYPASS_V5
         if _raw_preplanned_execution:
-            # The master turn already owns planning. Each milestone
-            # and final verification receive local Understanding,
-            # but never recursive master planning.
-            # gets a fresh semantic Understanding pass so the
-            # Director receives a focused execution brief, but it
-            # must never create a second plan.
-            _semantic_understanding_task = (
-                preplanned_understanding_prompt(
+            # The persistent Turn Checklist already owns semantic
+            # decomposition and planning. The canonical milestone
+            # or final-verification prompt is authoritative here.
+            #
+            # Do not route preplanned execution through the general
+            # Understanding or Planner models again. Doing so can
+            # reinterpret an already-approved milestone and creates
+            # a second structured-output failure boundary.
+            self._understanding = None
+            self._understanding_prompt = (
+                self._preplanned_execution_brief(
                     task
                 )
             )
-            if understanding_enabled():
-                try:
-                    self._understanding = understand_task(
-                        _semantic_understanding_task,
-                        progress=(
-                            self.say
-                            if self.live
-                            else None
-                        ),
-                        run_critic=True,
-                    )
-                except UnderstandingError as exc:
-                    raise RuntimeError(
-                        "NEXUS_MILESTONE_UNDERSTANDING_FAILED: "
-                        + str(exc)
-                    ) from exc
 
-                self._understanding_prompt = (
-                    render_executor_brief(
-                        self._understanding
-                    )
-                )
-            else:
-                self._understanding = None
-                self._understanding_prompt = (
-                    self._preplanned_execution_brief(
-                        task
-                    )
-                )
-
-            # Planning is authoritative at the master/checklist
-            # layer. A milestone must never recursively re-plan.
             self._execution_plan = None
             self._execution_plan_prompt = ""
             self._task_contract = None

@@ -170,7 +170,7 @@ def test_preplanned_union_contains_milestone_and_final():
     )
 
 
-def test_preplanned_true_branch_has_understanding_no_planner():
+def test_preplanned_true_branch_uses_direct_brief_no_models():
     source, branch = _preplanned_branch()
 
     body = _statements(
@@ -178,8 +178,25 @@ def test_preplanned_true_branch_has_understanding_no_planner():
         branch.body,
     )
 
-    assert "understand_task(" in body
+    assert "understand_task(" not in body
     assert "plan_task(" not in body
+    assert (
+        "preplanned_understanding_prompt("
+        not in body
+    )
+    assert (
+        "self._understanding = None"
+        in body
+    )
+    assert (
+        "self._preplanned_execution_brief("
+        in body
+    )
+    assert (
+        "self._execution_plan = None"
+        in body
+    )
+
 
 
 def test_normal_else_branch_preserves_planner():

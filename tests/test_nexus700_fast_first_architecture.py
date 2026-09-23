@@ -76,10 +76,10 @@ def test_understanding_and_planner_are_in_bypass():
     Persisted Turn Checklist work is already master-planned.
 
     Both milestone execution and final verification are members
-    of the preplanned execution path. They receive local
-    Understanding but never invoke Planner again.
+    of the preplanned execution path. They execute the canonical
+    persisted contract directly and invoke neither Understanding
+    nor Planner again.
     """
-
     run = _run()
     source = SOURCE
 
@@ -94,11 +94,9 @@ def test_understanding_and_planner_are_in_bypass():
     milestone_detector = segment.find(
         "is_turn_checklist_execution_prompt("
     )
-
     final_detector = segment.find(
         "is_final_verification_prompt("
     )
-
     master_preprocessor = segment.find(
         "_prepare_prompt_for_understanding("
     )
@@ -111,7 +109,6 @@ def test_understanding_and_planner_are_in_bypass():
         milestone_detector
         < master_preprocessor
     )
-
     assert (
         final_detector
         < master_preprocessor
@@ -167,43 +164,29 @@ def test_understanding_and_planner_are_in_bypass():
         in preplanned_branch.orelse
     )
 
-    # Preplanned work still receives semantic Understanding.
-    assert "understand_task(" in direct_text
-
-    # It must never recursively invoke Planner.
+    assert "understand_task(" not in direct_text
     assert "plan_task(" not in direct_text
+    assert (
+        "preplanned_understanding_prompt("
+        not in direct_text
+    )
 
-    # Ordinary requests retain the normal planning path.
+    assert (
+        "self._preplanned_execution_brief("
+        in direct_text
+    )
+    assert (
+        "self._understanding = None"
+        in direct_text
+    )
+    assert (
+        "self._execution_plan = None"
+        in direct_text
+    )
+
+    assert "understand_task(" in normal_text
     assert "plan_task(" in normal_text
 
-    # Both canonical execution classes feed the same branch.
-    assignment_start = segment.find(
-        "_raw_preplanned_execution = ("
-    )
-
-    assert assignment_start >= 0
-
-    assignment_end = segment.find(
-        "\n\n",
-        assignment_start,
-    )
-
-    assert assignment_end >= 0
-
-    assignment = segment[
-        assignment_start:
-        assignment_end
-    ]
-
-    assert (
-        "_raw_milestone_execution"
-        in assignment
-    )
-
-    assert (
-        "_raw_final_verification"
-        in assignment
-    )
 
 
 
